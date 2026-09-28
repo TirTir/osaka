@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import type { Map as MapLibreMap, Marker } from "maplibre-gl";
 
 type MapPlace = { id: string; name: string; category: string; lat: number; lon: number; day: number | null; position: number };
-type Props = { places: MapPlace[]; activeDay: string; preview: { lat: number; lon: number } | null; onPick?: (point: { lat: number; lon: number }) => void; onSelect?: (id: string) => void };
+type Props = { places: MapPlace[]; activeDay: string; preview: { lat: number; lon: number } | null; routeMode?: boolean; onPick?: (point: { lat: number; lon: number }) => void; onSelect?: (id: string) => void };
 
-export default function MapView({ places, activeDay, preview, onPick, onSelect }: Props) {
+export default function MapView({ places, activeDay, preview, routeMode = false, onPick, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<Marker[]>([]);
@@ -47,12 +47,13 @@ export default function MapView({ places, activeDay, preview, onPick, onSelect }
     void import("maplibre-gl").then(maplibregl => {
       if (cancelled || mapRef.current !== map) return;
       markersRef.current.forEach(marker => marker.remove());
-      markersRef.current = places.map(place => {
+      markersRef.current = places.map((place, index) => {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `map-marker map-marker-${place.category}`;
+        button.className = `map-marker map-marker-${place.category}${routeMode ? " map-marker-route" : ""}`;
         button.title = place.name;
         button.setAttribute("aria-label", place.name);
+        if (routeMode) button.textContent = String(index + 1);
         button.addEventListener("click", event => { event.stopPropagation(); callbacks.current.onSelect?.(place.id); });
         return new maplibregl.Marker({ element: button }).setLngLat([place.lon, place.lat]).addTo(map);
       });
@@ -63,7 +64,7 @@ export default function MapView({ places, activeDay, preview, onPick, onSelect }
         marker.className = "map-marker map-marker-preview";
         previewRef.current = new maplibregl.Marker({ element: marker }).setLngLat([preview.lon, preview.lat]).addTo(map);
       }
-      const route = activeDay !== "all" && activeDay !== "none" ? [...places].sort((a, b) => a.position - b.position).map(place => [place.lon, place.lat]) : [];
+      const route = routeMode || (activeDay !== "all" && activeDay !== "none") ? [...places].sort((a, b) => a.position - b.position).map(place => [place.lon, place.lat]) : [];
       const source = map.getSource("trip-route") as import("maplibre-gl").GeoJSONSource | undefined;
       if (source) source.setData({ type: "FeatureCollection", features: route.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: route } }] : [] });
       if (places.length) {
@@ -73,7 +74,7 @@ export default function MapView({ places, activeDay, preview, onPick, onSelect }
       }
     });
     return () => { cancelled = true; };
-  }, [places, activeDay, preview, ready]);
+  }, [places, activeDay, preview, ready, routeMode]);
 
   return <div className="map-canvas" ref={containerRef} aria-label="한국어 지명을 우선 표시하는 오사카 지도" />;
 }

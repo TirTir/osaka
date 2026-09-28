@@ -15,6 +15,13 @@
       "when": 1790062222562,
       "tag": "0001_chilly_lucky_pierre",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790560021776,
+      "tag": "0002_lowly_serpent_society",
+      "breakpoints": true
     }
   ]
 }
