@@ -55,7 +55,6 @@ type Props = {
   onRouteChange: (places: PlannerMapPlace[], label: string) => void;
 };
 
-const modeLabel = { walk: "도보", transit: "대중교통", drive: "차량" } as const;
 const modeSpeed = { walk: 4.5, transit: 22, drive: 28 } as const;
 const modeFactor = { walk: 1.22, transit: 1.34, drive: 1.28 } as const;
 const modeWait = { walk: 0, transit: 6, drive: 4 } as const;
@@ -99,14 +98,7 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
   const [shares, setShares] = useState<Share[]>([]);
   const [activeDay, setActiveDay] = useState(1);
   const [activeVariantId, setActiveVariantId] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
-  const [newTitle, setNewTitle] = useState(currentTripTitle ? `${currentTripTitle} 동선` : "새 여행 동선");
-  const [newDayCount, setNewDayCount] = useState(5);
-  const [newStartDate, setNewStartDate] = useState("");
   const [planTitle, setPlanTitle] = useState("");
-  const [planDayCount, setPlanDayCount] = useState(1);
-  const [planStartDate, setPlanStartDate] = useState("");
-  const [placeToAdd, setPlaceToAdd] = useState("");
   const [shareEmail, setShareEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -126,7 +118,7 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
     const next = data.itinerary || null;
     const nextVariants = data.variants || [];
     setSelectedId(id); setItinerary(next); setVariants(nextVariants); setStops(data.stops || []); setPlaces(data.places || []); setShares(data.shares || []);
-    setPlanTitle(next?.title || ""); setPlanDayCount(next?.dayCount || 1); setPlanStartDate(next?.startDate || "");
+    setPlanTitle(next?.title || "");
     const nextDay = nextVariants.some(variant => variant.day === activeDay) ? activeDay : (nextVariants[0]?.day || 1);
     setActiveDay(nextDay);
     setActiveVariantId(current => nextVariants.some(variant => variant.id === current && variant.day === nextDay) ? current : (nextVariants.find(variant => variant.day === nextDay)?.id || ""));
@@ -136,15 +128,12 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
     const data = await api("/api/itineraries?list=1");
     const nextItems = data.itineraries || [];
     setItems(nextItems);
-    const nextId = preferredId || (selectedId && nextItems.some(item => item.id === selectedId) ? selectedId : nextItems.find(item => item.tripId === currentTripId)?.id || nextItems[0]?.id || "");
+    const selected = nextItems.find(item => item.id === selectedId);
+    const nextId = preferredId || (selected?.tripId === currentTripId ? selectedId : nextItems.find(item => item.tripId === currentTripId)?.id || nextItems[0]?.id || "");
     await loadPlan(nextId);
   }, [currentTripId, loadPlan, selectedId]);
 
-  useEffect(() => { void loadList().catch(cause => setMessage((cause as Error).message)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!currentTripTitle) return;
-    setNewTitle(`${currentTripTitle} 동선`);
-  }, [currentTripTitle]);
+  useEffect(() => { void loadList().catch(cause => setMessage((cause as Error).message)); }, [currentTripId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dayVariants = useMemo(() => variants.filter(variant => variant.day === activeDay), [variants, activeDay]);
   const activeVariant = dayVariants.find(variant => variant.id === activeVariantId) || dayVariants[0] || null;
@@ -162,25 +151,39 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
     else if (!dayVariants.some(variant => variant.id === activeVariantId)) setActiveVariantId(dayVariants[0].id);
   }, [activeDay, dayVariants, activeVariantId]);
 
-  async function createItinerary(event: FormEvent) {
-    event.preventDefault();
+  async function createItinerary() {
     if (!currentTripId) return;
     setBusy(true); setMessage("");
     try {
-      const data = await api("/api/itineraries", { method: "POST", headers: authHeaders, body: JSON.stringify({ action: "create", tripId: currentTripId, title: newTitle, dayCount: newDayCount, startDate: newStartDate }) });
+      const ownedCount = items.filter(item => item.tripId === currentTripId && item.access === "owner").length;
+      const title = `${currentTripTitle || "새 여행"} 동선${ownedCount ? ` ${ownedCount + 1}` : ""}`;
+      const data = await api("/api/itineraries", { method: "POST", headers: authHeaders, body: JSON.stringify({ action: "create", tripId: currentTripId, title, dayCount: 1, startDate: "" }) });
       const id = data.itinerary?.id;
       if (!id) throw new Error("동선을 만들지 못했습니다.");
-      await api("/api/itineraries", { method: "POST", body: JSON.stringify({ action: "variant", itineraryId: id, day: 1, name: "1안", transportMode: "transit" }) });
-      setShowCreate(false); await loadList(id); setMessage(`${newDayCount - 1}박 ${newDayCount}일 동선을 만들었습니다.`);
+      const variant = await api("/api/itineraries", { method: "POST", body: JSON.stringify({ action: "variant", itineraryId: id, day: 1, name: "1안", transportMode: "transit" }) });
+      await loadList(id); setActiveDay(1); if (variant.id) setActiveVariantId(variant.id); setMessage("새 동선을 만들었습니다. 저장한 장소를 눌러 추가해 보세요.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
-  async function saveItinerary() {
-    if (!itinerary || !owner) return;
+  async function saveTitle() {
+    if (!itinerary || !owner || !planTitle.trim() || planTitle.trim() === itinerary.title) return;
     setBusy(true); setMessage("");
     try {
-      await api("/api/itineraries", { method: "PATCH", body: JSON.stringify({ action: "itinerary", itineraryId: itinerary.id, title: planTitle, dayCount: planDayCount, startDate: planStartDate }) });
-      await loadList(itinerary.id); setMessage("여행 기간과 이름을 저장했습니다.");
+      const title = planTitle.trim();
+      await api("/api/itineraries", { method: "PATCH", body: JSON.stringify({ action: "itinerary", itineraryId: itinerary.id, title, dayCount: itinerary.dayCount, startDate: itinerary.startDate || "" }) });
+      setItinerary(current => current ? { ...current, title } : current);
+      setItems(current => current.map(item => item.id === itinerary.id ? { ...item, title } : item));
+    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
+  }
+
+  async function addDay() {
+    if (!itinerary || !owner || itinerary.dayCount >= 30) return;
+    const day = itinerary.dayCount + 1;
+    setBusy(true); setMessage("");
+    try {
+      await api("/api/itineraries", { method: "PATCH", body: JSON.stringify({ action: "itinerary", itineraryId: itinerary.id, title: planTitle.trim() || itinerary.title, dayCount: day, startDate: itinerary.startDate || "" }) });
+      const variant = await api("/api/itineraries", { method: "POST", body: JSON.stringify({ action: "variant", itineraryId: itinerary.id, day, name: "1안", transportMode: "transit" }) });
+      await loadPlan(itinerary.id); setActiveDay(day); if (variant.id) setActiveVariantId(variant.id); setMessage(`${day}일차를 추가했습니다.`);
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
@@ -211,12 +214,12 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
-  async function addStop() {
-    if (!itinerary || !activeVariant || !placeToAdd || !owner) return;
+  async function addStop(placeId: string) {
+    if (!itinerary || !activeVariant || !placeId || !owner) return;
     setBusy(true); setMessage("");
     try {
-      await api("/api/itineraries", { method: "POST", body: JSON.stringify({ action: "stop", itineraryId: itinerary.id, variantId: activeVariant.id, placeId: placeToAdd }) });
-      setPlaceToAdd(""); await loadPlan(itinerary.id);
+      await api("/api/itineraries", { method: "POST", body: JSON.stringify({ action: "stop", itineraryId: itinerary.id, variantId: activeVariant.id, placeId }) });
+      await loadPlan(itinerary.id);
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
@@ -257,25 +260,18 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
   return <div className="planner">
     <div className="planner-toolbar">
       <div><span className="eyebrow">MY ROUTES</span><h2>내 동선</h2></div>
-      {currentTripId && <button className="compact-button" onClick={() => setShowCreate(value => !value)}><Plus size={15} /> 새 동선</button>}
+      {currentTripId && <button className="compact-button" onClick={() => void createItinerary()} disabled={busy}><Plus size={15} /> 동선 만들기</button>}
     </div>
-
-    {showCreate && <form className="planner-create" onSubmit={createItinerary}>
-      <label>동선 이름<input value={newTitle} onChange={event => setNewTitle(event.target.value)} required /></label>
-      <div className="planner-form-row"><label>출발일<input type="date" value={newStartDate} onChange={event => setNewStartDate(event.target.value)} /></label><label>여행 일수<input type="number" min="1" max="30" value={newDayCount} onChange={event => setNewDayCount(Number(event.target.value))} /></label></div>
-      <small>{Math.max(0, newDayCount - 1)}박 {newDayCount}일 · 현재 장소 목록을 사용합니다.</small>
-      <button className="primary-button" disabled={busy || !newTitle.trim()}>동선 만들기</button>
-    </form>}
 
     {items.length > 0 && <div className="planner-select"><label>동선 선택</label><Select value={selectedId} onValueChange={id => void loadPlan(id)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{items.map(item => <SelectItem key={item.id} value={item.id}>{item.title}{item.access === "view" ? " · 공유받음" : ""}</SelectItem>)}</SelectContent></Select></div>}
 
-    {!itinerary ? <div className="empty-card"><CalendarDays size={30} /><strong>{items.length ? "동선을 선택해 주세요" : "아직 만든 동선이 없어요"}</strong><p>{currentTripId ? "새 동선을 만들고 일차별로 여러 안을 비교해 보세요." : "장소 목록을 먼저 만들거나 공유받은 동선을 확인해 보세요."}</p></div> : <>
+    {!itinerary ? <div className="empty-card"><CalendarDays size={30} /><strong>{items.length ? "동선을 선택해 주세요" : "아직 만든 동선이 없어요"}</strong><p>{currentTripId ? "동선 만들기를 누르면 바로 시작할 수 있어요." : "장소 목록을 먼저 만들거나 공유받은 동선을 확인해 보세요."}</p></div> : <>
       <section className="plan-summary">
         <div className="plan-owner-line"><span>{itinerary.access === "owner" ? "내 동선" : `${itinerary.ownerEmail}님의 동선`}</span><span>{itinerary.tripTitle} 장소 목록</span></div>
-        {owner ? <><label>동선 이름<input value={planTitle} onChange={event => setPlanTitle(event.target.value)} /></label><div className="planner-form-row"><label>출발일<input type="date" value={planStartDate} onChange={event => setPlanStartDate(event.target.value)} /></label><label>여행 일수<input type="number" min="1" max="30" value={planDayCount} onChange={event => setPlanDayCount(Number(event.target.value))} /></label></div><button className="compact-button save-plan" onClick={saveItinerary} disabled={busy}>여행 정보 저장</button></> : <div className="readonly-plan"><strong>{itinerary.title}</strong><span>{itinerary.startDate || "날짜 미정"} · {itinerary.dayCount - 1}박 {itinerary.dayCount}일</span></div>}
+        {owner ? <label>동선 이름<input value={planTitle} onChange={event => setPlanTitle(event.target.value)} onBlur={() => void saveTitle()} /></label> : <div className="readonly-plan"><strong>{itinerary.title}</strong></div>}
       </section>
 
-      <Tabs value={String(activeDay)} onValueChange={value => setActiveDay(Number(value))} className="planner-days"><TabsList className="day-tabs-list">{Array.from({ length: itinerary.dayCount }, (_, index) => index + 1).map(day => <TabsTrigger key={day} value={String(day)}>{day}일차 {dayDate(itinerary.startDate, day)}</TabsTrigger>)}</TabsList></Tabs>
+      <div className="day-controls"><Tabs value={String(activeDay)} onValueChange={value => setActiveDay(Number(value))} className="planner-days"><TabsList className="day-tabs-list">{Array.from({ length: itinerary.dayCount }, (_, index) => index + 1).map(day => <TabsTrigger key={day} value={String(day)}>{day}일차 {dayDate(itinerary.startDate, day)}</TabsTrigger>)}</TabsList></Tabs>{owner && <button className="compact-button add-day-button" onClick={() => void addDay()} disabled={busy || itinerary.dayCount >= 30}><Plus size={15} /> 일차 추가</button>}</div>
 
       <div className="variant-heading"><div><strong>{activeDay}일차 동선안</strong><span>{dayVariants.length}개</span></div>{owner && <button className="compact-button" onClick={addVariant} disabled={busy}><CopyPlus size={15} /> 새 안</button>}</div>
       {dayVariants.length > 0 && <div className="variant-tabs">{dayVariants.map(variant => <button key={variant.id} className={activeVariant?.id === variant.id ? "active" : ""} onClick={() => setActiveVariantId(variant.id)}>{variant.name}</button>)}</div>}
@@ -297,7 +293,7 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
           </div>;
         })}</div> : <div className="route-placeholder">저장한 장소를 아래에서 골라 동선을 시작하세요.</div>}
 
-        {owner && <div className="add-stop-row"><Select value={placeToAdd} onValueChange={setPlaceToAdd}><SelectTrigger><SelectValue placeholder={availablePlaces.length ? "장소 선택" : "추가할 장소가 없습니다"} /></SelectTrigger><SelectContent>{availablePlaces.map(place => <SelectItem value={place.id} key={place.id}>{place.name}</SelectItem>)}</SelectContent></Select><button onClick={addStop} disabled={busy || !placeToAdd}><Plus size={15} /> 추가</button></div>}
+        {owner && <div className="saved-place-picker"><div className="saved-place-heading"><div><strong>저장한 장소</strong><span>눌러서 현재 동선에 추가하세요</span></div><em>{availablePlaces.length}곳</em></div>{places.length === 0 ? <p className="saved-place-empty">장소 목록에 저장한 장소가 없습니다. 먼저 장소 목록에서 장소를 저장해 주세요.</p> : availablePlaces.length ? <div className="saved-place-list">{availablePlaces.map(place => <button key={place.id} onClick={() => void addStop(place.id)} disabled={busy}><MapPin size={16} /><span><strong>{place.name}</strong><small>{place.address || "주소 미등록"}</small></span><Plus size={16} /></button>)}</div> : <p className="saved-place-empty">저장한 장소를 모두 이 동선에 추가했습니다.</p>}</div>}
         <p className="estimate-note">이동시간은 직선거리와 선택한 이동수단을 바탕으로 한 예상치입니다. 교통 상황은 실시간 경로에서 확인하세요.</p>
       </section>}
 
