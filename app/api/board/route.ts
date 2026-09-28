@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, getSessionUser, randomToken, sameOrigin, sha256 } from "@/auth/server";
 
-type PlaceInput = { name?: unknown; address?: unknown; category?: unknown; lat?: unknown; lon?: unknown; openingHours?: unknown; menuUrl?: unknown; websiteUrl?: unknown; notes?: unknown; day?: unknown; position?: unknown; sourceId?: unknown };
+type PlaceInput = { name?: unknown; address?: unknown; category?: unknown; collectionId?: unknown; lat?: unknown; lon?: unknown; openingHours?: unknown; menuUrl?: unknown; websiteUrl?: unknown; notes?: unknown; day?: unknown; position?: unknown; sourceId?: unknown };
 type Trip = { id: string; title: string; createdAt: string; ownerUserId: string | null };
 type Access = "owner" | "edit" | "view";
 const asText = (value: unknown, max = 500) => typeof value === "string" ? value.trim().slice(0, max) : "";
 const asUrl = (value: unknown) => { const raw = asText(value, 1200); if (!raw) return ""; try { const url = new URL(raw); return ["http:", "https:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; } };
+const asColor = (value: unknown) => /^#[0-9a-f]{6}$/i.test(asText(value, 7)) ? asText(value, 7) : "#d9553c";
 const error = (message: string, status: number) => NextResponse.json({ error: message }, { status });
 
 async function authorizedTrip(request: NextRequest): Promise<{ trip: Trip; access: Access } | null> {
@@ -37,10 +38,12 @@ export async function GET(request: NextRequest) {
     }
     const authorization = await authorizedTrip(request);
     if (!authorization) return error("목록을 열 수 없습니다. 로그인이나 공유 링크를 확인해 주세요.", 401);
-    const result = await db().prepare("SELECT id, source_id AS sourceId, name, address, category, lat, lon, opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes, day, position FROM places WHERE trip_id = ? ORDER BY COALESCE(day, 999), position, created_at")
+    const result = await db().prepare("SELECT id, source_id AS sourceId, collection_id AS collectionId, name, address, category, lat, lon, opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes, day, position FROM places WHERE trip_id = ? ORDER BY COALESCE(day, 999), position, created_at")
+      .bind(authorization.trip.id).all();
+    const collections = await db().prepare("SELECT id, name, color, position, created_at AS createdAt FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
       .bind(authorization.trip.id).all();
     const { id, title, createdAt } = authorization.trip;
-    return NextResponse.json({ trip: { id, title, createdAt }, access: authorization.access, legacy: authorization.trip.ownerUserId === null, places: result.results });
+    return NextResponse.json({ trip: { id, title, createdAt }, access: authorization.access, legacy: authorization.trip.ownerUserId === null, places: result.results, collections: collections.results });
   } catch (cause) { console.error(cause); return error("여행 정보를 불러오지 못했습니다.", 500); }
 }
 
@@ -79,6 +82,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ token, role });
     }
     if (access === "view") return error("보기 링크로는 장소를 수정할 수 없습니다.", 403);
+    if (body.action === "collection") {
+      const name = asText(body.name, 60);
+      if (!name) return error("목록 이름을 입력해 주세요.", 400);
+      const position = await db().prepare("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM place_collections WHERE trip_id = ?").bind(trip.id).first<{ next: number }>();
+      const id = crypto.randomUUID();
+      const color = asColor(body.color);
+      await db().prepare("INSERT INTO place_collections (id, trip_id, name, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(id, trip.id, name, color, position?.next ?? 1, new Date().toISOString()).run();
+      return NextResponse.json({ collection: { id, name, color, position: position?.next ?? 1 } }, { status: 201 });
+    }
     if (body.action !== "add") return error("알 수 없는 요청입니다.", 400);
     const place = body.place as PlaceInput | undefined;
     const name = asText(place?.name, 150);
@@ -86,9 +99,13 @@ export async function POST(request: NextRequest) {
     const lon = Number(place?.lon);
     if (!name || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return error("장소 이름과 위치를 확인해 주세요.", 400);
     const id = crypto.randomUUID();
+    const requestedCollectionId = asText(place?.collectionId, 100);
+    const collectionId = requestedCollectionId
+      ? (await db().prepare("SELECT id FROM place_collections WHERE id = ? AND trip_id = ?").bind(requestedCollectionId, trip.id).first<{ id: string }>())?.id || null
+      : null;
     const position = await db().prepare("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM places WHERE trip_id = ?").bind(trip.id).first<{ next: number }>();
-    await db().prepare("INSERT INTO places (id, trip_id, source_id, name, address, category, lat, lon, opening_hours, menu_url, website_url, notes, day, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(id, trip.id, asText(place?.sourceId, 100) || null, name, asText(place?.address, 300), asText(place?.category, 40) || "place", lat, lon, asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl), asText(place?.notes, 2000), null, position?.next ?? 1, new Date().toISOString()).run();
+    await db().prepare("INSERT INTO places (id, trip_id, collection_id, source_id, name, address, category, lat, lon, opening_hours, menu_url, website_url, notes, day, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, trip.id, collectionId, asText(place?.sourceId, 100) || null, name, asText(place?.address, 300), asText(place?.category, 40) || "place", lat, lon, asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl), asText(place?.notes, 2000), null, position?.next ?? 1, new Date().toISOString()).run();
     return NextResponse.json({ id }, { status: 201 });
   } catch (cause) { console.error(cause); return error("저장하지 못했습니다.", 500); }
 }
@@ -107,14 +124,27 @@ export async function PATCH(request: NextRequest) {
       await db().prepare("UPDATE trips SET title = ? WHERE id = ?").bind(title, trip.id).run();
       return NextResponse.json({ ok: true });
     }
+    if (body.action === "collection") {
+      const id = asText(body.id, 100);
+      const name = asText(body.name, 60);
+      if (!name) return error("목록 이름을 입력해 주세요.", 400);
+      const result = await db().prepare("UPDATE place_collections SET name = ?, color = ? WHERE id = ? AND trip_id = ?")
+        .bind(name, asColor(body.color), id, trip.id).run();
+      if (result.meta.changes !== 1) return error("장소 목록을 찾지 못했습니다.", 404);
+      return NextResponse.json({ ok: true });
+    }
     if (body.action !== "place") return error("알 수 없는 요청입니다.", 400);
     const id = asText(body.id, 100);
     const place = body.place as PlaceInput | undefined;
     const day = place?.day === null || place?.day === "" ? null : Number(place?.day);
     if (day !== null && (!Number.isInteger(day) || day < 1 || day > 30)) return error("일차를 확인해 주세요.", 400);
     const position = Number(place?.position);
-    await db().prepare("UPDATE places SET name = ?, address = ?, category = ?, opening_hours = ?, menu_url = ?, website_url = ?, notes = ?, day = ?, position = ? WHERE id = ? AND trip_id = ?")
-      .bind(asText(place?.name, 150), asText(place?.address, 300), asText(place?.category, 40) || "place", asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl), asText(place?.notes, 2000), day, Number.isInteger(position) ? position : 0, id, trip.id).run();
+    const requestedCollectionId = asText(place?.collectionId, 100);
+    const collectionId = requestedCollectionId
+      ? (await db().prepare("SELECT id FROM place_collections WHERE id = ? AND trip_id = ?").bind(requestedCollectionId, trip.id).first<{ id: string }>())?.id || null
+      : null;
+    await db().prepare("UPDATE places SET collection_id = ?, name = ?, address = ?, category = ?, opening_hours = ?, menu_url = ?, website_url = ?, notes = ?, day = ?, position = ? WHERE id = ? AND trip_id = ?")
+      .bind(collectionId, asText(place?.name, 150), asText(place?.address, 300), asText(place?.category, 40) || "place", asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl), asText(place?.notes, 2000), day, Number.isInteger(position) ? position : 0, id, trip.id).run();
     return NextResponse.json({ ok: true });
   } catch (cause) { console.error(cause); return error("수정하지 못했습니다.", 500); }
 }
@@ -125,6 +155,14 @@ export async function DELETE(request: NextRequest) {
     const authorization = await authorizedTrip(request);
     if (!authorization) return error("목록을 수정할 권한이 없습니다.", 401);
     if (authorization.access === "view") return error("보기 링크로는 장소를 수정할 수 없습니다.", 403);
+    const collectionId = request.nextUrl.searchParams.get("collectionId") || "";
+    if (collectionId) {
+      await db().batch([
+        db().prepare("UPDATE places SET collection_id = NULL WHERE collection_id = ? AND trip_id = ?").bind(collectionId, authorization.trip.id),
+        db().prepare("DELETE FROM place_collections WHERE id = ? AND trip_id = ?").bind(collectionId, authorization.trip.id),
+      ]);
+      return NextResponse.json({ ok: true });
+    }
     const id = request.nextUrl.searchParams.get("placeId") || "";
     if (!id) return error("장소 ID가 필요합니다.", 400);
     await db().prepare("DELETE FROM places WHERE id = ? AND trip_id = ?").bind(id, authorization.trip.id).run();

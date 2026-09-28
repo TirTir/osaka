@@ -9,9 +9,19 @@ export const trips = sqliteTable("trips", {
   createdAt: text("created_at").notNull(),
 });
 
+export const placeCollections = sqliteTable("place_collections", {
+  id: text("id").primaryKey(),
+  tripId: text("trip_id").notNull().references(() => trips.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  color: text("color").notNull().default("#d9553c"),
+  position: integer("position").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+}, table => [index("idx_place_collections_trip_position").on(table.tripId, table.position)]);
+
 export const places = sqliteTable("places", {
   id: text("id").primaryKey(),
   tripId: text("trip_id").notNull().references(() => trips.id, { onDelete: "cascade" }),
+  collectionId: text("collection_id").references(() => placeCollections.id, { onDelete: "set null" }),
   sourceId: text("source_id"),
   name: text("name").notNull(),
   address: text("address").notNull().default(""),
@@ -25,7 +35,10 @@ export const places = sqliteTable("places", {
   day: integer("day"),
   position: integer("position").notNull().default(0),
   createdAt: text("created_at").notNull(),
-}, table => [index("idx_places_trip_day_position").on(table.tripId, table.day, table.position)]);
+}, table => [
+  index("idx_places_trip_day_position").on(table.tripId, table.day, table.position),
+  index("idx_places_collection").on(table.collectionId),
+]);
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -85,5 +98,7 @@ export const routeStops = sqliteTable("route_stops", {
   variantId: text("variant_id").notNull().references(() => routeVariants.id, { onDelete: "cascade" }),
   placeId: text("place_id").notNull().references(() => places.id, { onDelete: "cascade" }),
   position: integer("position").notNull().default(0),
+  transportMode: text("transport_mode").notNull().default("walk"),
+  fareYen: integer("fare_yen").notNull().default(0),
   createdAt: text("created_at").notNull(),
 }, table => [index("idx_route_stops_variant_position").on(table.variantId, table.position)]);

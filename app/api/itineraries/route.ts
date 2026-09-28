@@ -20,7 +20,7 @@ const asDay = (value: unknown) => {
   const day = Number(value);
   return Number.isInteger(day) && day >= 1 && day <= 30 ? day : null;
 };
-const transportModes = new Set(["walk", "transit", "drive"]);
+const transportModes = new Set(["walk", "transit", "drive", "rail", "bus", "taxi"]);
 
 async function requireUser(request: NextRequest): Promise<SessionUser | null> {
   return getSessionUser(request);
@@ -85,7 +85,8 @@ export async function GET(request: NextRequest) {
     `).bind(id).all();
     const stops = await db().prepare(`
       SELECT rs.id AS stopId, rs.variant_id AS variantId, rs.position,
-        p.id, p.source_id AS sourceId, p.name, p.address, p.category, p.lat, p.lon,
+        rs.transport_mode AS legTransportMode, rs.fare_yen AS legFareYen,
+        p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
         p.opening_hours AS openingHours, p.menu_url AS menuUrl, p.website_url AS websiteUrl, p.notes
       FROM route_stops rs
       JOIN route_variants rv ON rv.id = rs.variant_id
@@ -95,10 +96,14 @@ export async function GET(request: NextRequest) {
     `).bind(id).all();
     const places = authorized.access === "owner"
       ? await db().prepare(`
-          SELECT id, source_id AS sourceId, name, address, category, lat, lon,
+          SELECT p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
             opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes
-          FROM places WHERE trip_id = ? ORDER BY name
+          FROM places p WHERE trip_id = ? ORDER BY name
         `).bind(authorized.itinerary.tripId).all()
+      : { results: [] };
+    const collections = authorized.access === "owner"
+      ? await db().prepare("SELECT id, name, color, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
+          .bind(authorized.itinerary.tripId).all()
       : { results: [] };
     const shares = authorized.access === "owner"
       ? await db().prepare(`
@@ -107,7 +112,7 @@ export async function GET(request: NextRequest) {
           WHERE s.itinerary_id = ? ORDER BY u.email
         `).bind(id).all()
       : { results: [] };
-    return NextResponse.json({ itinerary: { ...authorized.itinerary, access: authorized.access }, variants: variants.results, stops: stops.results, places: places.results, shares: shares.results });
+    return NextResponse.json({ itinerary: { ...authorized.itinerary, access: authorized.access }, variants: variants.results, stops: stops.results, places: places.results, collections: collections.results, shares: shares.results });
   } catch (cause) {
     console.error(cause);
     return error("동선을 불러오지 못했습니다.", 500);
@@ -245,6 +250,19 @@ export async function PATCH(request: NextRequest) {
           db().prepare("UPDATE route_stops SET position = ? WHERE id = ?").bind(current.position, neighbor.id),
         ]);
       }
+      return NextResponse.json({ ok: true });
+    }
+
+    if (body.action === "leg") {
+      const stopId = asText(body.stopId, 100);
+      const mode = String(body.transportMode);
+      const fareYen = Math.max(0, Math.min(100_000, Math.round(Number(body.fareYen) || 0)));
+      if (!transportModes.has(mode) || mode === "transit" || mode === "drive") return error("이동수단을 확인해 주세요.", 400);
+      const result = await db().prepare(`
+        UPDATE route_stops SET transport_mode = ?, fare_yen = ?
+        WHERE id = ? AND variant_id IN (SELECT id FROM route_variants WHERE itinerary_id = ?)
+      `).bind(mode, fareYen, stopId, itineraryId).run();
+      if (result.meta.changes !== 1) return error("이동 구간을 찾지 못했습니다.", 404);
       return NextResponse.json({ ok: true });
     }
 
