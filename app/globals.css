@@ -124,6 +124,11 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .plan-summary { background:#f3f8f6; }
 .plan-owner-line { color:#62777f; font-size:12px; }
 .plan-owner-line span:first-child { color:#a44938; font-weight:800; }
+.route-title-button { display:flex; align-items:center; gap:7px; width:fit-content; max-width:100%; border:0; background:transparent; color:#1b3440; padding:2px 0; text-align:left; }
+.route-title-button strong { overflow:hidden; font-size:19px; text-overflow:ellipsis; white-space:nowrap; }
+.route-title-button svg { flex:none; color:#a44938; }
+.route-title-button span { flex:none; color:#73868c; font-size:11px; }
+.route-title-editor { font-size:18px!important; font-weight:800; }
 .save-plan { align-self:flex-end; }
 .readonly-plan { display:flex; flex-direction:column; gap:4px; }
 .readonly-plan strong { font-size:18px; }
@@ -138,6 +143,9 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .variant-tabs button { flex:none; border:1px solid #d4e0dd; border-radius:999px; padding:7px 12px; background:#fff; color:#5b7077; font-size:13px; font-weight:750; }
 .variant-tabs button.active { border-color:#d9553c; background:#fff1ec; color:#ad432f; }
 .variant-card { gap:14px; background:#fff; }
+.simple-route-settings { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.simple-route-settings strong { color:#38535d; font-size:13px; }
+.simple-route-settings [data-slot="select-trigger"] { width:140px; background:#fff; }
 .variant-settings { display:grid; grid-template-columns:minmax(0,1fr) 128px 34px; gap:8px; align-items:center; }
 .variant-settings [data-slot="select-trigger"] { width:100%; background:#fff; }
 .icon-danger { display:grid; place-items:center; width:34px; height:34px; border:1px solid #efd6d2; border-radius:8px; background:#fff; color:#b84038; }

@@ -107,7 +107,7 @@ export async function GET(request: NextRequest) {
           WHERE s.itinerary_id = ? ORDER BY u.email
         `).bind(id).all()
       : { results: [] };
-    return NextResponse.json({ itinerary: authorized.itinerary, access: authorized.access, variants: variants.results, stops: stops.results, places: places.results, shares: shares.results });
+    return NextResponse.json({ itinerary: { ...authorized.itinerary, access: authorized.access }, variants: variants.results, stops: stops.results, places: places.results, shares: shares.results });
   } catch (cause) {
     console.error(cause);
     return error("동선을 불러오지 못했습니다.", 500);
