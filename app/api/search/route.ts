@@ -16,13 +16,29 @@ const BENIKEA_CALTON: SearchPlace = {
   menuUrl: "",
 };
 
+const TEMPURA_MAKINO_NAMBA: SearchPlace = {
+  sourceId: "curated:tempura-makino-namba-sennichimae",
+  name: "덴푸라 마키노 난바센니치마에점",
+  address: "3-3-4 Namba, Chuo Ward, Osaka 542-0076, Japan (난바 니치다이 빌딩 1층)",
+  lat: 34.6664397,
+  lon: 135.5018975,
+  category: "food",
+  openingHours: "매일 11:00–21:30",
+  websiteUrl: "https://stores.toridoll.com/110983",
+  menuUrl: "",
+};
+
 function knownPlaces(query: string) {
   const normalized = query.normalize("NFKC").toLowerCase().replaceAll("dotombori", "dotonbori").replaceAll("doutonbori", "dotonbori");
   const compact = normalized.replace(/[^a-z0-9가-힣ぁ-んァ-ヶ一-龯]/g, "");
   const isBenikeaCalton = (compact.includes("benikea") && compact.includes("calton"))
     || (compact.includes("베니키아") && compact.includes("칼튼"))
     || compact.includes("ベニキアカルトン");
-  return isBenikeaCalton ? [BENIKEA_CALTON] : [];
+  if (isBenikeaCalton) return [BENIKEA_CALTON];
+
+  const isTempuraMakinoNamba = (/(덴|텐)푸라/.test(compact) && compact.includes("마키노") && compact.includes("난바"))
+    || (compact.includes("まきの") && compact.includes("難波千日前"));
+  return isTempuraMakinoNamba ? [TEMPURA_MAKINO_NAMBA] : [];
 }
 
 export async function GET(request: NextRequest) {
@@ -34,7 +50,18 @@ export async function GET(request: NextRequest) {
 
   try {
     if (!key) {
-      const aliases: Record<string, string> = { "도톤보리": "道頓堀", "난바": "難波", "우메다": "梅田", "신사이바시": "心斎橋", "오사카성": "大阪城", "이치란": "一蘭", "돈키호테": "ドン・キホーテ", "유니버설 스튜디오": "ユニバーサル・スタジオ・ジャパン" };
+      const aliases: Record<string, string> = {
+        "츠케멘 스즈메 아메무라 본점": "つけ麺 雀 アメ村本店",
+        "츠케멘 스즈메": "つけ麺 雀 アメ村本店",
+        "도톤보리": "道頓堀",
+        "난바": "難波",
+        "우메다": "梅田",
+        "신사이바시": "心斎橋",
+        "오사카성": "大阪城",
+        "이치란": "一蘭",
+        "돈키호테": "ドン・キホーテ",
+        "유니버설 스튜디오": "ユニバーサル・スタジオ・ジャパン",
+      };
       const localizedQuery = Object.entries(aliases).reduce((value, [from, to]) => value.replaceAll(from, to), query)
         .replaceAll(/dotombori/gi, "Dotonbori")
         .replaceAll(/doutonbori/gi, "Dotonbori");
