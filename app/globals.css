@@ -17,6 +17,11 @@ button,input { font:inherit; } button { cursor:pointer; }
 .place-panel { background:#fff; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:auto; }
 .panel-heading { padding:34px 28px 24px; } .eyebrow { margin:0 0 13px; color:#d9553c; font-weight:800; letter-spacing:.16em; font-size:12px; }
 h1 { margin:0; font-size:29px; line-height:1.28; letter-spacing:-.05em; } .intro { margin:12px 0 0; color:#687c87; line-height:1.65; font-size:15px; }
+.trip-title-button { display:flex; align-items:center; gap:8px; max-width:100%; border:0; padding:0; color:inherit; background:transparent; text-align:left; }
+.trip-title-button h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.trip-title-button svg { flex:none; color:#a84332; }
+.trip-title-button span { flex:none; color:#71848b; font-size:11px; }
+.trip-title-editor { width:100%; border:1px solid #cdd9d9; border-radius:10px; padding:7px 10px; color:#1b3140; background:#fff; font-size:24px; font-weight:800; outline:0; }
 .search-form { padding:0 28px 25px; border-bottom:1px solid var(--border); } .search-form label { display:block; font-size:14px; font-weight:700; margin-bottom:9px; }
 .search-row { display:flex; gap:8px; } .search-row input { min-width:0; flex:1; border:1px solid #cfdbdb; border-radius:10px; padding:11px 13px; outline:0; font-size:15px; }
 .search-row input:focus { border-color:#d9553c; box-shadow:0 0 0 3px #d9553c22; } .search-row button { border:0; border-radius:10px; color:white; background:#d9553c; font-weight:700; padding:0 17px; }
@@ -100,13 +105,23 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .auth-form .text-button { align-self:flex-start; margin-top:2px; }
 .share-controls { display:flex; flex-wrap:wrap; gap:8px; padding:0 28px 23px; }
 .share-controls small { flex-basis:100%; }
+.trip-share-manager { display:flex; flex-direction:column; gap:10px; margin:0 28px 20px; padding:14px; border:1px solid #d8e4e1; border-radius:12px; background:#f8fbf9; }
+.trip-share-manager > form { display:grid; grid-template-columns:minmax(0,1fr) 92px auto; gap:7px; }
+.trip-share-manager input { min-width:0; border:1px solid #cdd9d9; border-radius:8px; padding:8px 9px; background:#fff; }
+.trip-share-manager [data-slot="select-trigger"] { width:100%; background:#fff; }
+.trip-share-manager form > button { display:flex; align-items:center; gap:4px; border:0; border-radius:8px; padding:0 10px; color:#fff; background:#315f59; font-size:12px; font-weight:750; }
+.trip-share-manager > p { margin:0; color:#6e8087; font-size:12px; line-height:1.5; }
+.trip-share-list { display:flex; flex-direction:column; gap:6px; }
+.trip-share-list > div { display:grid; grid-template-columns:minmax(0,1fr) 88px 27px; align-items:center; gap:7px; }
+.trip-share-list span { overflow:hidden; color:#38535d; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.trip-share-list button { display:grid; place-items:center; width:27px; height:27px; border:1px solid #ead5d1; border-radius:7px; color:#aa4438; background:#fff; font-size:17px; }
 .map-marker { width:22px; height:22px; border:3px solid #fff; border-radius:50%; background:#3b887d; box-shadow:0 2px 9px #17334355; cursor:pointer; }
 .map-marker-food { background:#d9553c; }
 .map-marker-stay { background:#173343; }
 .map-marker-preview { width:25px; height:25px; border-color:#173343; background:#f7c65a; cursor:default; }
 .map-marker-route { width:28px; height:28px; display:grid; place-items:center; color:#fff; border-width:2px; font-size:12px; font-weight:800; }
 .maplibregl-map { font-family:Arial,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
-@media(max-width:800px) { .account-email { display:none; } .my-trips { padding:0 20px 18px; } .auth-form { margin:0 20px 22px; } .share-controls { padding:0 20px 20px; } }
+@media(max-width:800px) { .account-email { display:none; } .my-trips { padding:0 20px 18px; } .auth-form { margin:0 20px 22px; } .share-controls { padding:0 20px 20px; } .trip-share-manager { margin:0 20px 18px; } .trip-share-manager > form { grid-template-columns:minmax(0,1fr) 90px; } .trip-share-manager form > button { grid-column:1/3; justify-content:center; min-height:34px; } }
 
 .collection-manager { display:flex; flex-direction:column; gap:10px; padding:0 28px 20px; border-bottom:1px solid var(--border); }
 .collection-heading { display:flex; align-items:center; justify-content:space-between; font-size:14px; }

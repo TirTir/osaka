@@ -44,9 +44,9 @@ async function itineraryAccess(id: string, userId: string): Promise<{ itinerary:
 }
 
 async function canUseTrip(request: NextRequest, tripId: string, userId: string) {
-  const owned = await db().prepare("SELECT id, title FROM trips WHERE id = ? AND owner_user_id = ?")
-    .bind(tripId, userId).first<{ id: string; title: string }>();
-  if (owned) return owned;
+  const available = await db().prepare(`SELECT t.id, t.title FROM trips t LEFT JOIN trip_shares s ON s.trip_id = t.id AND s.user_id = ? WHERE t.id = ? AND (t.owner_user_id = ? OR s.user_id = ?)`)
+    .bind(userId, tripId, userId, userId).first<{ id: string; title: string }>();
+  if (available) return available;
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
   if (!/^[0-9a-f]{64}$/.test(token)) return null;
   const hash = await sha256(token);
@@ -102,7 +102,7 @@ export async function GET(request: NextRequest) {
         `).bind(authorized.itinerary.tripId).all()
       : { results: [] };
     const collections = authorized.access === "owner"
-      ? await db().prepare("SELECT id, name, color, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
+      ? await db().prepare("SELECT id, name, color, is_default AS isDefault, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
           .bind(authorized.itinerary.tripId).all()
       : { results: [] };
     const shares = authorized.access === "owner"

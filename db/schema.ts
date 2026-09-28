@@ -14,6 +14,7 @@ export const placeCollections = sqliteTable("place_collections", {
   tripId: text("trip_id").notNull().references(() => trips.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   color: text("color").notNull().default("#d9553c"),
+  isDefault: integer("is_default").notNull().default(0),
   position: integer("position").notNull().default(0),
   createdAt: text("created_at").notNull(),
 }, table => [index("idx_place_collections_trip_position").on(table.tripId, table.position)]);
@@ -54,6 +55,17 @@ export const sessions = sqliteTable("sessions", {
   expiresAt: text("expires_at").notNull(),
   createdAt: text("created_at").notNull(),
 }, table => [index("idx_sessions_user_id").on(table.userId)]);
+
+export const tripShares = sqliteTable("trip_shares", {
+  id: text("id").primaryKey(),
+  tripId: text("trip_id").notNull().references(() => trips.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: text("role").notNull().default("view"),
+  createdAt: text("created_at").notNull(),
+}, table => [
+  index("idx_trip_shares_user").on(table.userId),
+  uniqueIndex("idx_trip_shares_trip_user").on(table.tripId, table.userId),
+]);
 
 export const loginAttempts = sqliteTable("login_attempts", {
   id: text("id").primaryKey(),

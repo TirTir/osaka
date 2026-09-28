@@ -9,11 +9,11 @@ import TransportGuide from "./transport-guide";
 
 type Place = { id: string; sourceId?: string; collectionId: string | null; name: string; address: string; category: string; lat: number; lon: number; openingHours: string; menuUrl: string; websiteUrl: string; notes: string; day: number | null; position: number };
 type SearchPlace = Omit<Place, "id" | "collectionId" | "notes" | "day" | "position">;
-type Collection = { id: string; name: string; color: string; position: number };
-type Trip = { id: string; title: string; createdAt?: string; placeCount?: number };
+type Collection = { id: string; name: string; color: string; isDefault: number; position: number };
+type Trip = { id: string; title: string; createdAt?: string; placeCount?: number; access?: Access; ownerEmail?: string };
+type TripShare = { id: string; userId: string; email: string; role: "view" | "edit" };
 type Access = "owner" | "edit" | "view";
-type ApiResponse = { error?: string; user?: { id: string; email: string } | null; trips?: Trip[]; trip?: Trip; places?: Place[]; collections?: Collection[]; collection?: Collection; access?: Access; legacy?: boolean; token?: string; role?: string };
-const categories: Record<string, string> = { place: "장소", food: "가게", stay: "숙소" };
+type ApiResponse = { error?: string; user?: { id: string; email: string } | null; trips?: Trip[]; trip?: Trip; places?: Place[]; collections?: Collection[]; collection?: Collection; shares?: TripShare[]; share?: TripShare; access?: Access; legacy?: boolean; token?: string; role?: string };
 
 async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -38,6 +38,11 @@ export default function TripBoard() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState("all");
   const [newCollectionName, setNewCollectionName] = useState("");
+  const [tripShares, setTripShares] = useState<TripShare[]>([]);
+  const [shareUserEmail, setShareUserEmail] = useState("");
+  const [shareUserRole, setShareUserRole] = useState<"view" | "edit">("view");
+  const [editingTripTitle, setEditingTripTitle] = useState(false);
+  const [tripTitleDraft, setTripTitleDraft] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchPlace[]>([]);
   const [searchProvider, setSearchProvider] = useState("");
@@ -63,7 +68,7 @@ export default function TripBoard() {
   const loadBoard = useCallback(async (id: string, token: string) => {
     const target = boardPath(id, token);
     const data = await api(target.path, { headers: target.headers });
-    setBoardId(id); setShareToken(token); setTrip(data.trip || null); setPlaces(data.places || []); setCollections(data.collections || []); setSelectedCollectionId("all"); setAccess(data.access || null); setLegacy(!!data.legacy);
+    setBoardId(id); setShareToken(token); setTrip(data.trip || null); setTripTitleDraft(data.trip?.title || ""); setEditingTripTitle(false); setPlaces(data.places || []); setCollections(data.collections || []); setTripShares(data.shares || []); setSelectedCollectionId("all"); setAccess(data.access || null); setLegacy(!!data.legacy);
     setDraft(null); setResults([]);
     return data;
   }, [boardPath]);
@@ -106,11 +111,12 @@ export default function TripBoard() {
     if (!boardId && !shareToken) return null;
     const target = boardPath(boardId, shareToken);
     const data = await api(target.path, { headers: target.headers });
-    setTrip(data.trip || null); setPlaces(data.places || []); setCollections(data.collections || []); setAccess(data.access || null); setLegacy(!!data.legacy);
+    setTrip(data.trip || null); setTripTitleDraft(data.trip?.title || ""); setPlaces(data.places || []); setCollections(data.collections || []); setTripShares(data.shares || []); setAccess(data.access || null); setLegacy(!!data.legacy);
     return data;
   }, [boardId, shareToken, boardPath]);
   const writable = access === "owner" || access === "edit";
-  const visiblePlaces = useMemo(() => places.filter(place => selectedCollectionId === "all" || (selectedCollectionId === "unassigned" ? !place.collectionId : place.collectionId === selectedCollectionId)), [places, selectedCollectionId]);
+  const defaultCollectionId = collections.find(collection => collection.isDefault)?.id || "";
+  const visiblePlaces = useMemo(() => places.filter(place => selectedCollectionId === "all" || place.collectionId === selectedCollectionId || (selectedCollectionId === defaultCollectionId && !place.collectionId)), [places, selectedCollectionId, defaultCollectionId]);
 
   async function authenticate(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage("");
@@ -127,16 +133,18 @@ export default function TripBoard() {
     setBusy(true); setMessage("");
     try {
       await api("/api/auth", { method: "DELETE" });
-      setUser(null); setMyTrips([]); setTrip(null); setPlaces([]); setCollections([]); setAccess(null); setLegacy(false); setBoardId(""); setShareToken("");
+      setUser(null); setMyTrips([]); setTrip(null); setPlaces([]); setCollections([]); setTripShares([]); setAccess(null); setLegacy(false); setBoardId(""); setShareToken("");
       window.location.hash = "";
       setMessage("로그아웃했습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
   async function createTrip() {
+    const title = window.prompt("새 여행 목록 이름을 입력해 주세요.", "새 여행")?.trim();
+    if (!title) return;
     setBusy(true); setMessage("");
     try {
-      const data = await api("/api/board", { method: "POST", body: JSON.stringify({ action: "create" }) });
+      const data = await api("/api/board", { method: "POST", body: JSON.stringify({ action: "create", title }) });
       if (!data.trip) throw new Error("목록을 만들지 못했습니다.");
       await loadTrips(); await loadBoard(data.trip.id, "");
       window.location.hash = `board=${data.trip.id}`;
@@ -144,9 +152,24 @@ export default function TripBoard() {
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
+  async function saveTripTitle() {
+    if (!trip || access !== "owner") return;
+    const title = tripTitleDraft.trim();
+    if (!title) { setTripTitleDraft(trip.title); setEditingTripTitle(false); return; }
+    if (title === trip.title) { setEditingTripTitle(false); return; }
+    setBusy(true); setMessage("");
+    try {
+      const target = boardPath(boardId, shareToken);
+      await api(target.path, { method: "PATCH", headers: target.headers, body: JSON.stringify({ action: "trip", title }) });
+      setTrip(current => current ? { ...current, title } : current);
+      setMyTrips(current => current.map(item => item.id === trip.id ? { ...item, title } : item));
+      setEditingTripTitle(false); setMessage("여행 목록 이름을 변경했습니다.");
+    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
+  }
+
   async function selectTrip(id: string) {
     setMessage("");
-    try { await loadBoard(id, ""); window.location.hash = `board=${id}`; }
+    try { await loadBoard(id, ""); window.history.replaceState(null, "", `#board=${id}`); }
     catch (cause) { setMessage((cause as Error).message); }
   }
 
@@ -178,6 +201,31 @@ export default function TripBoard() {
     finally { setBusy(false); }
   }
 
+  async function saveUserShare(event?: FormEvent, existing?: TripShare, nextRole?: "view" | "edit") {
+    event?.preventDefault();
+    if (access !== "owner") return;
+    const email = existing?.email || shareUserEmail.trim();
+    const role = nextRole || shareUserRole;
+    if (!email) return;
+    setBusy(true); setMessage("");
+    try {
+      const target = boardPath(boardId, "");
+      await api(target.path, { method: "POST", body: JSON.stringify({ action: "share_user", email, role }) });
+      setShareUserEmail(""); await reload();
+      setMessage(`${email} 사용자에게 ${role === "edit" ? "편집" : "보기"} 권한을 설정했습니다.`);
+    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
+  }
+
+  async function removeUserShare(share: TripShare) {
+    if (access !== "owner" || !window.confirm(`${share.email} 사용자의 공유 권한을 해제할까요?`)) return;
+    setBusy(true); setMessage("");
+    try {
+      const target = boardPath(boardId, "", `?shareId=${encodeURIComponent(share.id)}`);
+      await api(target.path, { method: "DELETE" });
+      await reload(); setMessage("사용자 공유를 해제했습니다.");
+    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
+  }
+
   async function createCollection(event: FormEvent) {
     event.preventDefault();
     const name = newCollectionName.trim();
@@ -189,30 +237,30 @@ export default function TripBoard() {
       const data = await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "collection", name, color: colors[collections.length % colors.length] }) });
       await reload(); setNewCollectionName("");
       if (data.collection?.id) setSelectedCollectionId(data.collection.id);
-      setMessage(`${name} 목록을 만들었습니다.`);
+      setMessage(`${name} 카테고리를 만들었습니다.`);
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
   async function renameCollection(collection: Collection) {
     if (!writable) return;
-    const name = window.prompt("새 목록 이름을 입력해 주세요.", collection.name)?.trim();
+    const name = window.prompt("새 카테고리 이름을 입력해 주세요.", collection.name)?.trim();
     if (!name || name === collection.name) return;
     setBusy(true); setMessage("");
     try {
       const target = boardPath(boardId, shareToken);
       await api(target.path, { method: "PATCH", headers: target.headers, body: JSON.stringify({ action: "collection", id: collection.id, name, color: collection.color }) });
-      await reload(); setMessage("목록 이름을 변경했습니다.");
+      await reload(); setMessage("카테고리 이름을 변경했습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
   async function removeCollection(collection: Collection) {
-    if (!writable || !window.confirm(`${collection.name} 목록을 삭제할까요? 장소는 삭제되지 않고 미분류로 이동합니다.`)) return;
+    if (!writable || !window.confirm(`${collection.name} 카테고리를 삭제할까요? 장소는 삭제되지 않고 기본 카테고리로 이동합니다.`)) return;
     setBusy(true); setMessage("");
     try {
       const target = boardPath(boardId, shareToken, `?collectionId=${encodeURIComponent(collection.id)}`);
       await api(target.path, { method: "DELETE", headers: target.headers });
       if (selectedCollectionId === collection.id) setSelectedCollectionId("all");
-      await reload(); setMessage("목록을 삭제했습니다. 장소는 미분류에 남아 있습니다.");
+      await reload(); setMessage("카테고리를 삭제했습니다. 장소는 기본 카테고리로 이동했습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
@@ -239,7 +287,7 @@ export default function TripBoard() {
         } catch { detailWarning = " 영업시간은 불러오지 못해 비워뒀습니다."; }
       }
       const target = boardPath(boardId, shareToken);
-      await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "add", place: { ...completePlace, collectionId: selectedCollectionId === "all" || selectedCollectionId === "unassigned" ? null : selectedCollectionId } }) });
+      await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "add", place: { ...completePlace, collectionId: selectedCollectionId === "all" ? null : selectedCollectionId } }) });
       await reload(); setResults([]); setQuery(""); setManual(false); setPicked(null);
       setMessage(`${place.name}을(를) 저장했습니다.${detailWarning}`);
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
@@ -281,19 +329,20 @@ export default function TripBoard() {
     <header className="topbar"><div className="brand"><span className="brand-mark">大阪</span><span>오사카 여행 지도</span></div>{user && <nav className="main-menu" aria-label="주 메뉴"><button className={workspaceMode === "places" ? "active" : ""} onClick={() => setWorkspaceMode("places")}><List size={16} /> 장소</button><button className={workspaceMode === "routes" ? "active" : ""} onClick={() => { setWorkspaceMode("routes"); setDraft(null); }}><Route size={16} /> 동선</button><button className={workspaceMode === "guide" ? "active" : ""} onClick={() => { setWorkspaceMode("guide"); setDraft(null); }}><CreditCard size={16} /> 교통비</button></nav>}<div className="header-actions">{user && <><span className="account-email">{user.email}</span><button className="share-button" onClick={signOut} disabled={busy}><LogOut size={15} /> 로그아웃</button></>}</div></header>
     <div className="workspace">
       <section className="place-panel" aria-label="여행 장소와 일정">
-        <div className="panel-heading"><p className="eyebrow">OSAKA TRIP BOARD</p><h1>{workspaceMode === "routes" ? "여행 동선 계획" : workspaceMode === "guide" ? "오사카 교통비 안내" : trip?.title || "가고 싶은 곳을 모아보세요"}</h1><p className="intro">{workspaceMode === "routes" ? "목록별로 장소를 골라 동선에 추가하고 구간마다 이동수단을 정하세요." : workspaceMode === "guide" ? "노선마다 다른 요금과 환승 방식을 여행 전에 쉽게 확인하세요." : trip ? (access === "owner" ? "카페·음식점처럼 목록을 나눠 동행자와 함께 관리할 수 있어요." : access === "view" ? "공유받은 보기 전용 장소 목록" : "공유받은 편집 장소 목록") : "가고 싶은 장소를 먼저 모은 뒤 나만의 동선을 만들 수 있어요."}</p></div>
+        <div className="panel-heading"><p className="eyebrow">OSAKA TRIP BOARD</p>{workspaceMode === "places" && trip && access === "owner" ? editingTripTitle ? <input className="trip-title-editor" aria-label="여행 목록 이름" autoFocus value={tripTitleDraft} onChange={event => setTripTitleDraft(event.target.value)} onBlur={() => void saveTripTitle()} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setTripTitleDraft(trip.title); setEditingTripTitle(false); } }} /> : <button className="trip-title-button" onClick={() => setEditingTripTitle(true)}><h1>{trip.title}</h1><Pencil size={16} /><span>이름 수정</span></button> : <h1>{workspaceMode === "routes" ? "여행 동선 계획" : workspaceMode === "guide" ? "오사카 교통비 안내" : trip?.title || "가고 싶은 곳을 모아보세요"}</h1>}<p className="intro">{workspaceMode === "routes" ? "카테고리별로 장소를 골라 동선에 추가하고 구간마다 이동수단을 정하세요." : workspaceMode === "guide" ? "노선마다 다른 요금과 환승 방식을 여행 전에 쉽게 확인하세요." : trip ? (access === "owner" ? "기본 카테고리와 사용자 지정 카테고리로 장소를 관리할 수 있어요." : access === "view" ? "공유받은 보기 전용 장소 목록" : "공유받은 편집 장소 목록") : "가고 싶은 장소를 먼저 모은 뒤 나만의 동선을 만들 수 있어요."}</p></div>
         {workspaceMode === "places" ? <>
-        {user && <div className="my-trips"><div className="my-trips-heading"><strong>내 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <button key={item.id} className={boardId === item.id && !shareToken ? "active" : ""} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳</span></button>)}</div>}</div>}
+        {user && <div className="my-trips"><div className="my-trips-heading"><strong>여행 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <button key={item.id} className={boardId === item.id && !shareToken ? "active" : ""} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳{item.access && item.access !== "owner" ? ` · ${item.ownerEmail || "다른 사용자"} 공유` : ""}</span></button>)}</div>}</div>}
         {!user && legacy && trip && <form className="auth-form" onSubmit={authenticate}><strong>기존 목록을 내 계정에 저장</strong><p>회원가입하거나 로그인한 뒤 목록을 가져올 수 있어요.</p><label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label><label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label><button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "로그인"}</button><button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button></form>}
         {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? <form className="auth-form" onSubmit={authenticate}><strong>{authMode === "signup" ? "회원가입" : "로그인"}</strong><p>계정마다 비공개 여행 목록을 만들 수 있어요.</p><label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label><label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label>{authMode === "signup" && <small>10자 이상 입력해 주세요.</small>}<button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "로그인"}</button><button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button></form> : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
           {legacy && user && access === "edit" && <div className="start-box"><p>이전에 만든 목록입니다. 내 계정으로 가져오면 비공개 목록에 추가되고 기존 공유 링크는 만료됩니다.</p><button className="primary-button" onClick={claimTrip} disabled={busy}>내 목록으로 가져오기</button></div>}
           {access === "owner" && <div className="share-controls"><button onClick={() => shareTrip("view")} disabled={busy}><Copy size={15} /> 보기 링크 복사</button><button onClick={() => shareTrip("edit")} disabled={busy}><Copy size={15} /> 편집 링크 복사</button><small>링크를 가진 사람만 볼 수 있어요. 새 링크를 만들면 이전 링크가 교체됩니다.</small></div>}
-          <section className="collection-manager"><div className="collection-heading"><strong>장소 목록</strong><span>{collections.length}개</span></div><div className="collection-tabs"><button className={selectedCollectionId === "all" ? "active" : ""} onClick={() => setSelectedCollectionId("all")}>전체 <small>{places.length}</small></button>{collections.map(collection => <span className="collection-tab-wrap" key={collection.id}><button className={selectedCollectionId === collection.id ? "active" : ""} onClick={() => setSelectedCollectionId(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name} <small>{places.filter(place => place.collectionId === collection.id).length}</small></button>{writable && <span className="collection-tools"><button aria-label={`${collection.name} 이름 변경`} onClick={() => void renameCollection(collection)}><Pencil size={12} /></button><button aria-label={`${collection.name} 목록 삭제`} onClick={() => void removeCollection(collection)}>×</button></span>}</span>)}<button className={selectedCollectionId === "unassigned" ? "active" : ""} onClick={() => setSelectedCollectionId("unassigned")}>미분류 <small>{places.filter(place => !place.collectionId).length}</small></button></div>{writable && <form className="collection-create" onSubmit={createCollection}><input value={newCollectionName} onChange={event => setNewCollectionName(event.target.value)} placeholder="예: 카페, 음식점, 쇼핑" maxLength={60} /><button disabled={busy || !newCollectionName.trim()}><Plus size={14} /> 목록 추가</button></form>}</section>
+          {access === "owner" && <section className="trip-share-manager"><div className="collection-heading"><strong>공유 사용자</strong><span>{tripShares.length}명</span></div><form onSubmit={event => void saveUserShare(event)}><input type="email" value={shareUserEmail} onChange={event => setShareUserEmail(event.target.value)} placeholder="가입한 사용자 이메일" required /><Select value={shareUserRole} onValueChange={value => setShareUserRole(value as "view" | "edit")}><SelectTrigger aria-label="공유 권한"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button disabled={busy}><Plus size={14} /> 추가</button></form>{tripShares.length > 0 ? <div className="trip-share-list">{tripShares.map(share => <div key={share.id}><span>{share.email}</span><Select value={share.role} onValueChange={value => void saveUserShare(undefined, share, value as "view" | "edit")}><SelectTrigger aria-label={`${share.email} 권한`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button aria-label={`${share.email} 공유 해제`} onClick={() => void removeUserShare(share)}>×</button></div>)}</div> : <p>이메일로 공유하면 여기에서 권한을 변경하거나 해제할 수 있습니다.</p>}</section>}
+          <section className="collection-manager"><div className="collection-heading"><strong>장소 카테고리</strong><span>{collections.length}개</span></div><div className="collection-tabs"><button className={selectedCollectionId === "all" ? "active" : ""} onClick={() => setSelectedCollectionId("all")}>전체 <small>{places.length}</small></button>{collections.map(collection => <span className="collection-tab-wrap" key={collection.id}><button className={selectedCollectionId === collection.id ? "active" : ""} onClick={() => setSelectedCollectionId(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name} <small>{places.filter(place => place.collectionId === collection.id || (collection.isDefault && !place.collectionId)).length}</small></button>{writable && !collection.isDefault && <span className="collection-tools"><button aria-label={`${collection.name} 이름 변경`} onClick={() => void renameCollection(collection)}><Pencil size={12} /></button><button aria-label={`${collection.name} 카테고리 삭제`} onClick={() => void removeCollection(collection)}>×</button></span>}</span>)}</div>{writable && <form className="collection-create" onSubmit={createCollection}><input value={newCollectionName} onChange={event => setNewCollectionName(event.target.value)} placeholder="사용자 지정 카테고리" maxLength={60} /><button disabled={busy || !newCollectionName.trim()}><Plus size={14} /> 추가</button></form>}</section>
           {writable && <><form className="search-form" onSubmit={search}><label htmlFor="place-search">장소 검색</label><div className="search-row"><input id="place-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="한글·일본어 가게, 숙소, 관광지 이름" /><button type="submit" disabled={searching}><Search size={17} /><span>{searching ? "검색 중" : "검색"}</span></button></div><p className="search-hint">한국어 지명을 우선 표시합니다. 자료가 없으면 현지어가 나올 수 있어요.</p><button type="button" className="text-button" onClick={() => { setManual(value => !value); setResults([]); }}>지도에서 직접 장소 추가</button></form>
           {results.length > 0 && <div className="search-results"><div className="result-title">검색 결과 <span>{results.length}곳</span></div><p className="result-help">{searchProvider === "Geoapify" ? "저장할 때 등록된 영업시간과 웹사이트를 확인합니다." : "영업시간이 비어 있을 수 있어요. 저장 후 직접 입력할 수 있습니다."}</p>{results.map((place, index) => <div className="result-card" key={`${place.sourceId}-${index}`}><strong>{place.name}</strong><span>{place.address}</span><button onClick={() => addPlace(place)} disabled={busy}><Plus size={15} /> 저장</button></div>)}</div>}
           {manual && <form className="manual-form" onSubmit={addManual}><strong>지도에서 위치를 눌러 주세요</strong><p>{picked ? `${picked.lat.toFixed(5)}, ${picked.lon.toFixed(5)}` : "위치를 선택하면 여기에 좌표가 표시됩니다."}</p><input aria-label="장소 이름" placeholder="장소 이름" value={manualName} onChange={event => setManualName(event.target.value)} required /><input aria-label="주소" placeholder="주소 (선택)" value={manualAddress} onChange={event => setManualAddress(event.target.value)} /><button className="primary-button" disabled={busy || !picked}>장소 저장</button></form>}</>}
-          <div className="panel-section-title"><h2>{selectedCollectionId === "all" ? "전체 장소" : selectedCollectionId === "unassigned" ? "미분류 장소" : collections.find(item => item.id === selectedCollectionId)?.name || "장소 목록"}</h2><span>{visiblePlaces.length}곳</span></div>
-          {visiblePlaces.length ? <div className="place-list">{visiblePlaces.map((place, index) => { const collection = collections.find(item => item.id === place.collectionId); return <button className={`place-card ${draft?.id === place.id ? "is-selected" : ""}`} key={place.id} onClick={() => setDraft({ ...place })}><span className="place-number">{index + 1}</span><span className="place-card-body"><span className="place-card-top"><strong>{place.name}</strong><em style={collection ? { color: collection.color, backgroundColor: `${collection.color}18` } : undefined}>{collection?.name || categories[place.category] || "미분류"}</em></span><span className="place-card-address">{place.address || "주소 미등록"}</span><span className="place-card-meta">{place.openingHours ? "영업시간 있음" : "영업시간 미등록"}</span></span></button>; })}</div> : <div className="empty-card"><MapPin size={30} /><strong>아직 저장한 장소가 없어요</strong><p>{writable ? "가고 싶은 곳을 검색해 지도에 담아보세요." : "공유한 사람이 장소를 추가하면 여기에 표시됩니다."}</p></div>}
+          <div className="panel-section-title"><h2>{selectedCollectionId === "all" ? "전체 장소" : collections.find(item => item.id === selectedCollectionId)?.name || "기본"}</h2><span>{visiblePlaces.length}곳</span></div>
+          {visiblePlaces.length ? <div className="place-list">{visiblePlaces.map((place, index) => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button className={`place-card ${draft?.id === place.id ? "is-selected" : ""}`} key={place.id} onClick={() => setDraft({ ...place })}><span className="place-number">{index + 1}</span><span className="place-card-body"><span className="place-card-top"><strong>{place.name}</strong><em style={collection ? { color: collection.color, backgroundColor: `${collection.color}18` } : undefined}>{collection?.name || "기본"}</em></span><span className="place-card-address">{place.address || "주소 미등록"}</span><span className="place-card-meta">{place.openingHours ? "영업시간 있음" : "영업시간 미등록"}</span></span></button>; })}</div> : <div className="empty-card"><MapPin size={30} /><strong>아직 저장한 장소가 없어요</strong><p>{writable ? "가고 싶은 곳을 검색해 지도에 담아보세요." : "공유한 사람이 장소를 추가하면 여기에 표시됩니다."}</p></div>}
         </>}
         </> : workspaceMode === "routes" && user ? <RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} onRouteChange={handleRouteChange} /> : workspaceMode === "guide" && user ? <TransportGuide /> : null}
         {message && <p className="status-message" role="status">{message}</p>}
@@ -303,7 +352,7 @@ export default function TripBoard() {
       {workspaceMode === "places" && draft && <aside className="detail-panel" aria-label={`${draft.name} 상세 정보`}><div className="detail-header"><div><span className="eyebrow">PLACE DETAILS</span><h2>{draft.name}</h2></div><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}>×</button></div><p className="detail-address">{draft.address || "주소가 없습니다."}</p><div className="detail-fields">
         <label>장소 이름<input value={draft.name} disabled={!writable} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
         <label>주소<input value={draft.address} disabled={!writable} onChange={event => setDraft({ ...draft, address: event.target.value })} /></label>
-        <label>목록<Select value={draft.collectionId || "unassigned"} disabled={!writable} onValueChange={value => setDraft({ ...draft, collectionId: value === "unassigned" ? null : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">미분류</SelectItem>{collections.map(collection => <SelectItem key={collection.id} value={collection.id}>{collection.name}</SelectItem>)}</SelectContent></Select></label>
+        <label>카테고리<Select value={draft.collectionId || defaultCollectionId} disabled={!writable} onValueChange={value => setDraft({ ...draft, collectionId: value })}><SelectTrigger><SelectValue placeholder="기본" /></SelectTrigger><SelectContent>{collections.map(collection => <SelectItem key={collection.id} value={collection.id}>{collection.name}</SelectItem>)}</SelectContent></Select></label>
         <label>종류<Select value={draft.category} disabled={!writable} onValueChange={value => setDraft({ ...draft, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="place">관광지·기타</SelectItem><SelectItem value="food">가게</SelectItem><SelectItem value="stay">숙소</SelectItem></SelectContent></Select></label>
         <label>영업시간<textarea rows={3} value={draft.openingHours} disabled={!writable} onChange={event => setDraft({ ...draft, openingHours: event.target.value })} placeholder="가게 영업시간" /></label>
         <label>메뉴 링크<input type="url" value={draft.menuUrl} disabled={!writable} onChange={event => setDraft({ ...draft, menuUrl: event.target.value })} placeholder="https://" /></label>

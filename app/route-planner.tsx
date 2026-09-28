@@ -24,7 +24,7 @@ type Place = PlannerMapPlace & {
   notes: string;
 };
 type Stop = Omit<Place, "day"> & { stopId: string; variantId: string; legTransportMode: TransportMode; legFareYen: number };
-type Collection = { id: string; name: string; color: string; position: number };
+type Collection = { id: string; name: string; color: string; isDefault: number; position: number };
 type TransportMode = "walk" | "rail" | "bus" | "taxi";
 type Variant = { id: string; itineraryId: string; day: number; name: string; transportMode: "walk" | "transit" | "drive"; createdAt: string };
 type Itinerary = {
@@ -143,12 +143,15 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
     await loadPlan(nextId);
   }, [currentTripId, loadPlan, selectedId]);
 
-  useEffect(() => { void loadList().catch(cause => setMessage((cause as Error).message)); }, [currentTripId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Loading a different place list intentionally replaces the planner's local view state.
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { void loadList().catch(cause => setMessage((cause as Error).message)); }, [currentTripId]);
 
   const activeVariant = variants[0] || null;
   const activeStops = useMemo(() => stops.filter(stop => stop.variantId === activeVariant?.id).sort((a, b) => a.position - b.position), [stops, activeVariant]);
   const usedPlaceIds = useMemo(() => new Set(activeStops.map(stop => stop.id)), [activeStops]);
-  const availablePlaces = useMemo(() => places.filter(place => !usedPlaceIds.has(place.id) && (collectionFilter === "all" || (collectionFilter === "unassigned" ? !place.collectionId : place.collectionId === collectionFilter))), [places, usedPlaceIds, collectionFilter]);
+  const defaultCollectionId = collections.find(collection => collection.isDefault)?.id || "";
+  const availablePlaces = useMemo(() => places.filter(place => !usedPlaceIds.has(place.id) && (collectionFilter === "all" || place.collectionId === collectionFilter || (collectionFilter === defaultCollectionId && !place.collectionId))), [places, usedPlaceIds, collectionFilter, defaultCollectionId]);
   const owner = itinerary?.access === "owner";
   const totalFare = useMemo(() => activeStops.slice(1).reduce((sum, stop) => sum + (Number(stop.legFareYen) || 0), 0), [activeStops]);
 
@@ -270,7 +273,7 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
 
         {activeStops.length > 1 && <div className="fare-total"><span><Banknote size={18} /> 이 동선의 예상 교통비</span><strong>{totalFare.toLocaleString()}엔</strong><small>1인 기준 · 입력한 구간 요금의 합계</small></div>}
 
-        {owner && <div className="saved-place-picker"><div className="saved-place-heading"><div><strong>저장한 장소</strong><span>목록을 고른 뒤 눌러서 동선에 추가하세요</span></div><em>{availablePlaces.length}곳</em></div><div className="collection-filter"><button className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")}>전체</button>{collections.map(collection => <button key={collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name}</button>)}<button className={collectionFilter === "unassigned" ? "active" : ""} onClick={() => setCollectionFilter("unassigned")}>미분류</button></div>{places.length === 0 ? <p className="saved-place-empty">장소 목록에 저장한 장소가 없습니다. 먼저 장소 목록에서 장소를 저장해 주세요.</p> : availablePlaces.length ? <div className="saved-place-list">{availablePlaces.map(place => { const collection = collections.find(item => item.id === place.collectionId); return <button key={place.id} onClick={() => void addStop(place.id)} disabled={busy}><MapPin size={16} /><span><strong>{place.name}</strong><small>{collection ? `${collection.name} · ` : ""}{place.address || "주소 미등록"}</small></span><Plus size={16} /></button>; })}</div> : <p className="saved-place-empty">이 목록에서 추가할 수 있는 장소가 없습니다.</p>}</div>}
+        {owner && <div className="saved-place-picker"><div className="saved-place-heading"><div><strong>저장한 장소</strong><span>카테고리를 고른 뒤 눌러서 동선에 추가하세요</span></div><em>{availablePlaces.length}곳</em></div><div className="collection-filter"><button className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")}>전체</button>{collections.map(collection => <button key={collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name}</button>)}</div>{places.length === 0 ? <p className="saved-place-empty">장소 목록에 저장한 장소가 없습니다. 먼저 장소 목록에서 장소를 저장해 주세요.</p> : availablePlaces.length ? <div className="saved-place-list">{availablePlaces.map(place => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button key={place.id} onClick={() => void addStop(place.id)} disabled={busy}><MapPin size={16} /><span><strong>{place.name}</strong><small>{collection ? `${collection.name} · ` : "기본 · "}{place.address || "주소 미등록"}</small></span><Plus size={16} /></button>; })}</div> : <p className="saved-place-empty">이 카테고리에서 추가할 수 있는 장소가 없습니다.</p>}</div>}
         <p className="estimate-note">시간과 요금은 계획용 예상치입니다. 철도는 Osaka Metro 거리 요금, 버스는 Osaka City Bus 일반요금을 기준으로 제안하며 실제 노선·환승에 따라 달라질 수 있습니다.</p>
       </section>}
 
