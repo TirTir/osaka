@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 export const SESSION_COOKIE = "osaka_session";
 const SESSION_DAYS = 30;
-const ITERATIONS = 310_000;
+// Cloudflare Workers Web Crypto currently accepts PBKDF2 counts up to 100,000.
+const ITERATIONS = 100_000;
 
 export type User = { id: string; email: string };
 
@@ -29,9 +30,9 @@ export async function sha256(value: string) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function passwordHash(password: string, salt: string) {
+export async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
   const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: new TextEncoder().encode(salt), iterations: ITERATIONS, hash: "SHA-256" }, material, 256);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: new TextEncoder().encode(salt), iterations, hash: "SHA-256" }, material, 256);
   return Array.from(new Uint8Array(bits), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 

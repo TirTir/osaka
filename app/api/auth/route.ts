@@ -32,7 +32,16 @@ export async function POST(request: NextRequest) {
       const found = await db().prepare("SELECT id, email, password_hash AS passwordHash, password_salt AS passwordSalt FROM users WHERE email = ?")
         .bind(email).first<{ id: string; email: string; passwordHash: string; passwordSalt: string }>();
       const derived = await passwordHash(password, found?.passwordSalt || "missing-user-salt");
-      if (!found || !constantTimeEqual(derived, found.passwordHash)) {
+      let passwordMatches = !!found && constantTimeEqual(derived, found.passwordHash);
+      if (found && !passwordMatches) {
+        try {
+          const legacyDerived = await passwordHash(password, found.passwordSalt, 310_000);
+          passwordMatches = constantTimeEqual(legacyDerived, found.passwordHash);
+        } catch {
+          // Hosted Workers reject the legacy count; production accounts use 100,000.
+        }
+      }
+      if (!found || !passwordMatches) {
         await db().prepare("INSERT INTO login_attempts (id, email_hash, created_at) VALUES (?, ?, ?)")
           .bind(crypto.randomUUID(), key, new Date().toISOString()).run();
         return fail("이메일 또는 비밀번호가 올바르지 않습니다.", 401);
