@@ -4,15 +4,40 @@ import { NextRequest, NextResponse } from "next/server";
 type SearchPlace = { sourceId: string; name: string; address: string; lat: number; lon: number; category: string; openingHours: string; websiteUrl: string; menuUrl: string };
 const fail = (message: string, status: number) => NextResponse.json({ error: message }, { status });
 
+const BENIKEA_CALTON: SearchPlace = {
+  sourceId: "curated:benikea-calton-hotel-osaka-dotonbori",
+  name: "베니키아 칼튼 호텔 오사카 도톤보리",
+  address: "2-15-4 Shimanouchi, Chuo Ward, Osaka 542-0082, Japan",
+  lat: 34.66988702,
+  lon: 135.5071258,
+  category: "stay",
+  openingHours: "",
+  websiteUrl: "",
+  menuUrl: "",
+};
+
+function knownPlaces(query: string) {
+  const normalized = query.normalize("NFKC").toLowerCase().replaceAll("dotombori", "dotonbori").replaceAll("doutonbori", "dotonbori");
+  const compact = normalized.replace(/[^a-z0-9가-힣ぁ-んァ-ヶ一-龯]/g, "");
+  const isBenikeaCalton = (compact.includes("benikea") && compact.includes("calton"))
+    || (compact.includes("베니키아") && compact.includes("칼튼"))
+    || compact.includes("ベニキアカルトン");
+  return isBenikeaCalton ? [BENIKEA_CALTON] : [];
+}
+
 export async function GET(request: NextRequest) {
   const query = (request.nextUrl.searchParams.get("q") || "").trim().slice(0, 100);
   if (query.length < 2) return fail("두 글자 이상 입력해 주세요.", 400);
+  const curatedPlaces = knownPlaces(query);
+  if (curatedPlaces.length) return NextResponse.json({ places: curatedPlaces, provider: "Curated" });
   const key = env.GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
 
   try {
     if (!key) {
       const aliases: Record<string, string> = { "도톤보리": "道頓堀", "난바": "難波", "우메다": "梅田", "신사이바시": "心斎橋", "오사카성": "大阪城", "이치란": "一蘭", "돈키호테": "ドン・キホーテ", "유니버설 스튜디오": "ユニバーサル・スタジオ・ジャパン" };
-      const localizedQuery = Object.entries(aliases).reduce((value, [from, to]) => value.replaceAll(from, to), query);
+      const localizedQuery = Object.entries(aliases).reduce((value, [from, to]) => value.replaceAll(from, to), query)
+        .replaceAll(/dotombori/gi, "Dotonbori")
+        .replaceAll(/doutonbori/gi, "Dotonbori");
       const url = new URL("https://photon.komoot.io/api/");
       url.searchParams.set("q", localizedQuery);
       url.searchParams.set("lat", "34.6688");

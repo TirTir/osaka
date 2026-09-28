@@ -19,6 +19,7 @@ export default function MapView({ places, activeDay, preview, routeMode = false,
     let disposed = false;
     void import("maplibre-gl").then(maplibregl => {
       if (disposed || !containerRef.current || mapRef.current) return;
+      maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
       const map = new maplibregl.Map({ container: containerRef.current, style: "https://tiles.openfreemap.org/styles/liberty", center: [135.5013, 34.6688], zoom: 13 });
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
       map.on("click", event => callbacks.current.onPick?.({ lat: event.lngLat.lat, lon: event.lngLat.lng }));
