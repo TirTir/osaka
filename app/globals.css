@@ -302,4 +302,16 @@ button:disabled { opacity:.55; cursor:not-allowed; }
   .exchange-rate-card { margin-left:20px; margin-right:20px; }
   .route-leg-controls { grid-template-columns:1fr; }
   .fare-grid { grid-template-columns:repeat(3,1fr); }
+  .guide-map { height:auto; min-height:0; padding:24px 20px; place-items:stretch; }
+  .guide-map-summary { width:100%; padding:24px; }
+  .guide-map-summary > span { display:grid; grid-template-columns:minmax(0,1fr) auto; text-align:left; }
+  .guide-map-summary span small { text-align:right; white-space:nowrap; }
+}
+
+@media(max-width:440px) {
+  .fare-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .guide-map { padding:18px 14px; }
+  .guide-map-summary { gap:8px; padding:20px 16px; border-radius:18px; }
+  .guide-map-summary > span { grid-template-columns:1fr; gap:3px; }
+  .guide-map-summary span small { text-align:left; }
 }
