@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { Copy, CreditCard, List, LogOut, MapPin, Pencil, Plus, Route, Search, Trash2 } from "lucide-react";
+import { Copy, CreditCard, List, LogOut, MapPin, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Route, Search, Trash2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import MapView from "./map-view";
 import RoutePlanner, { type PlannerMapPlace } from "./route-planner";
@@ -14,6 +14,12 @@ type Trip = { id: string; title: string; createdAt?: string; placeCount?: number
 type TripShare = { id: string; userId: string; email: string; role: "view" | "edit" };
 type Access = "owner" | "edit" | "view";
 type ApiResponse = { error?: string; user?: { id: string; email: string } | null; trips?: Trip[]; trip?: Trip; places?: Place[]; collections?: Collection[]; collection?: Collection; shares?: TripShare[]; share?: TripShare; access?: Access; legacy?: boolean; token?: string; role?: string };
+type ExchangeRate = { rate: number; date: string; unit: number; source: string };
+
+function wonPrice(yen: number, rate: number | null) {
+  if (!rate) return "";
+  return `약 ${(Math.round(yen * rate / 10) * 10).toLocaleString()}원`;
+}
 
 async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -57,6 +63,9 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
   const [workspaceMode, setWorkspaceMode] = useState<"places" | "routes" | "guide">("places");
   const [routeMapPlaces, setRouteMapPlaces] = useState<PlannerMapPlace[]>([]);
   const [routeMapLabel, setRouteMapLabel] = useState("동선 미정");
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [exchangeRate, setExchangeRate] = useState<ExchangeRate | null>(null);
+  const [exchangeRateFailed, setExchangeRateFailed] = useState(false);
 
   const boardPath = useCallback((id: string, token: string, suffix = "") => {
     const url = new URL(`/api/board${suffix}`, window.location.origin);
@@ -113,6 +122,18 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     })();
     return () => { cancelled = true; };
   }, [loadBoard, loadTrips]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/exchange-rate")
+      .then(async response => {
+        if (!response.ok) throw new Error("환율을 불러오지 못했습니다.");
+        return await response.json() as ExchangeRate;
+      })
+      .then(data => { if (!cancelled) setExchangeRate(data); })
+      .catch(() => { if (!cancelled) setExchangeRateFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   const reload = useCallback(async () => {
     if (!boardId && !shareToken) return null;
@@ -171,6 +192,25 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
       setTrip(current => current ? { ...current, title } : current);
       setMyTrips(current => current.map(item => item.id === trip.id ? { ...item, title } : item));
       setEditingTripTitle(false); setMessage("여행 목록 이름을 변경했습니다.");
+    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
+  }
+
+  async function removeTrip(item: Trip) {
+    if (item.access !== "owner" || !window.confirm(`\"${item.title}\" 여행 목록과 저장된 장소, 연결된 동선을 모두 삭제할까요?`)) return;
+    setBusy(true); setMessage("");
+    try {
+      await api(`/api/board?id=${encodeURIComponent(item.id)}&trip=1`, { method: "DELETE" });
+      const remaining = await loadTrips();
+      if (boardId === item.id && !shareToken) {
+        if (remaining.length) {
+          await loadBoard(remaining[0].id, "");
+          window.history.replaceState(null, "", `#board=${remaining[0].id}`);
+        } else {
+          setBoardId(""); setTrip(null); setPlaces([]); setCollections([]); setTripShares([]); setAccess(null); setLegacy(false); setDraft(null);
+          window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+        }
+      }
+      setMessage("여행 목록을 삭제했습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
@@ -349,13 +389,14 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     </section>;
   }
 
-  return <main className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">大阪</span><span>오사카 여행 지도</span></div>{user && <nav className="main-menu" aria-label="주 메뉴"><button className={workspaceMode === "places" ? "active" : ""} onClick={() => setWorkspaceMode("places")}><List size={16} /> 장소</button><button className={workspaceMode === "routes" ? "active" : ""} onClick={() => { setWorkspaceMode("routes"); setDraft(null); }}><Route size={16} /> 동선</button><button className={workspaceMode === "guide" ? "active" : ""} onClick={() => { setWorkspaceMode("guide"); setDraft(null); }}><CreditCard size={16} /> 교통비</button></nav>}<div className="header-actions">{user && <><span className="account-email">{user.email}</span><button className="share-button" onClick={signOut} disabled={busy}><LogOut size={15} /> 로그아웃</button></>}</div></header>
+  return <main className={`app-shell ${panelOpen ? "" : "panel-collapsed"}`}>
+    <header className="topbar"><div className="brand"><button className="brand-mark" aria-controls="trip-panel" aria-expanded={panelOpen} aria-label={panelOpen ? "여행 목록 닫기" : "여행 목록 열기"} onClick={() => setPanelOpen(value => !value)}>{panelOpen ? <PanelLeftClose size={19} /> : <PanelLeftOpen size={19} />}</button><span>오사카 여행 지도</span></div>{user && <nav className="main-menu" aria-label="주 메뉴"><button className={workspaceMode === "places" ? "active" : ""} onClick={() => { setWorkspaceMode("places"); setPanelOpen(true); }}><List size={16} /> 장소</button><button className={workspaceMode === "routes" ? "active" : ""} onClick={() => { setWorkspaceMode("routes"); setDraft(null); setPanelOpen(true); }}><Route size={16} /> 동선</button><button className={workspaceMode === "guide" ? "active" : ""} onClick={() => { setWorkspaceMode("guide"); setDraft(null); setPanelOpen(true); }}><CreditCard size={16} /> 교통비</button></nav>}<div className="header-actions">{user && <><span className="account-email">{user.email}</span><button className="share-button" onClick={signOut} disabled={busy}><LogOut size={15} /> 로그아웃</button></>}</div></header>
     <div className="workspace">
-      <section className="place-panel" aria-label="여행 장소와 일정">
+      <section id="trip-panel" className="place-panel" aria-label="여행 장소와 일정">
         <div className="panel-heading"><p className="eyebrow">OSAKA TRIP BOARD</p>{workspaceMode === "places" && trip && access === "owner" ? editingTripTitle ? <input className="trip-title-editor" aria-label="여행 목록 이름" autoFocus value={tripTitleDraft} onChange={event => setTripTitleDraft(event.target.value)} onBlur={() => void saveTripTitle()} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setTripTitleDraft(trip.title); setEditingTripTitle(false); } }} /> : <button className="trip-title-button" onClick={() => setEditingTripTitle(true)}><h1>{trip.title}</h1><Pencil size={16} /><span>이름 수정</span></button> : <h1>{workspaceMode === "routes" ? "여행 동선 계획" : workspaceMode === "guide" ? "오사카 교통비 안내" : trip?.title || "가고 싶은 곳을 모아보세요"}</h1>}<p className="intro">{workspaceMode === "routes" ? "카테고리별로 장소를 골라 동선에 추가하고 구간마다 이동수단을 정하세요." : workspaceMode === "guide" ? "노선마다 다른 요금과 환승 방식을 여행 전에 쉽게 확인하세요." : trip ? (access === "owner" ? "기본 카테고리와 사용자 지정 카테고리로 장소를 관리할 수 있어요." : access === "view" ? "공유받은 보기 전용 장소 목록" : "공유받은 편집 장소 목록") : "가고 싶은 장소를 먼저 모은 뒤 나만의 동선을 만들 수 있어요."}</p></div>
+        <section className="exchange-rate-card" aria-label="현재 엔화 환율"><span>현재 환율</span>{exchangeRate ? <><strong>100엔 ≈ {(Math.round(exchangeRate.rate * 100 / 10) * 10).toLocaleString()}원</strong><small>{exchangeRate.date} 기준 · 실제 결제 환율은 다를 수 있어요</small></> : <><strong>{exchangeRateFailed ? "환율 확인 불가" : "불러오는 중"}</strong><small>최근 고시 환율을 표시합니다</small></>}</section>
         {workspaceMode === "places" ? <>
-        {user && <div className="my-trips"><div className="my-trips-heading"><strong>여행 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <button key={item.id} className={boardId === item.id && !shareToken ? "active" : ""} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳{item.access && item.access !== "owner" ? ` · ${item.ownerEmail || "다른 사용자"} 공유` : ""}</span></button>)}</div>}</div>}
+        {user && <div className="my-trips"><div className="my-trips-heading"><strong>여행 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <div className="trip-list-item" key={item.id}><button className={`trip-select ${boardId === item.id && !shareToken ? "active" : ""}`} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳{item.access && item.access !== "owner" ? ` · ${item.ownerEmail || "다른 사용자"} 공유` : ""}</span></button>{item.access === "owner" && <button className="trip-delete" aria-label={`${item.title} 여행 목록 삭제`} onClick={() => void removeTrip(item)} disabled={busy}><Trash2 size={13} /></button>}</div>)}</div>}</div>}
         {!user && legacy && trip && renderAuthPanel("기존 목록을 내 계정에 저장", "원하는 방법으로 로그인한 뒤 이 목록을 가져올 수 있어요.")}
         {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? renderAuthPanel("로그인 또는 회원가입", "ChatGPT 계정이나 이메일 계정으로 여행 목록을 관리하세요.") : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
           {legacy && user && access === "edit" && <div className="start-box"><p>이전에 만든 목록입니다. 내 계정으로 가져오면 비공개 목록에 추가되고 기존 공유 링크는 만료됩니다.</p><button className="primary-button" onClick={claimTrip} disabled={busy}>내 목록으로 가져오기</button></div>}
@@ -368,11 +409,11 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
           <div className="panel-section-title"><h2>{selectedCollectionId === "all" ? "전체 장소" : collections.find(item => item.id === selectedCollectionId)?.name || "기본"}</h2><span>{visiblePlaces.length}곳</span></div>
           {visiblePlaces.length ? <div className="place-list">{visiblePlaces.map((place, index) => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button className={`place-card ${draft?.id === place.id ? "is-selected" : ""}`} key={place.id} onClick={() => setDraft({ ...place })}><span className="place-number">{index + 1}</span><span className="place-card-body"><span className="place-card-top"><strong>{place.name}</strong><em style={collection ? { color: collection.color, backgroundColor: `${collection.color}18` } : undefined}>{collection?.name || "기본"}</em></span><span className="place-card-address">{place.address || "주소 미등록"}</span><span className="place-card-meta">{place.openingHours ? "영업시간 있음" : "영업시간 미등록"}</span></span></button>; })}</div> : <div className="empty-card"><MapPin size={30} /><strong>아직 저장한 장소가 없어요</strong><p>{writable ? "가고 싶은 곳을 검색해 지도에 담아보세요." : "공유한 사람이 장소를 추가하면 여기에 표시됩니다."}</p></div>}
         </>}
-        </> : workspaceMode === "routes" && user ? <RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} onRouteChange={handleRouteChange} /> : workspaceMode === "guide" && user ? <TransportGuide /> : null}
+        </> : workspaceMode === "routes" && user ? <RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} yenToKrwRate={exchangeRate?.rate || null} onRouteChange={handleRouteChange} /> : workspaceMode === "guide" && user ? <TransportGuide yenToKrwRate={exchangeRate?.rate || null} /> : null}
         {message && <p className="status-message" role="status">{message}</p>}
         <div className="panel-footer">지도 데이터 © OpenStreetMap contributors · <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://photon.komoot.io/" target="_blank" rel="noreferrer">Photon</a> · <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Powered by Geoapify</a></div>
       </section>
-      <section className={`map-panel ${workspaceMode === "guide" ? "guide-map" : ""}`} aria-label={workspaceMode === "guide" ? "교통비 빠른 요약" : "오사카 지도"}>{workspaceMode === "guide" ? <div className="guide-map-summary"><CreditCard size={34} /><strong>교통비 계산 기준</strong><span>도보 0엔</span><span>Osaka Metro 190~390엔</span><span>Osaka City Bus 210엔</span><p>동선 메뉴에서 구간마다 이동수단과 실제 확인한 요금을 수정하면 총액이 자동으로 합산됩니다.</p></div> : <><MapView places={workspaceMode === "routes" ? routeMapPlaces : visiblePlaces} activeDay={workspaceMode === "routes" ? "route" : "all"} preview={workspaceMode === "places" ? picked : null} routeMode={workspaceMode === "routes"} onPick={workspaceMode === "places" && manual && writable ? setPicked : undefined} onSelect={workspaceMode === "places" ? id => { const found = places.find(place => place.id === id); if (found) setDraft({ ...found }); } : undefined} /><div className="map-note">{workspaceMode === "routes" ? routeMapLabel : "오사카 · 한국어 지명 우선"}</div></>}</section>
+      <section className={`map-panel ${workspaceMode === "guide" ? "guide-map" : ""}`} aria-label={workspaceMode === "guide" ? "교통비 빠른 요약" : "오사카 지도"}>{workspaceMode === "guide" ? <div className="guide-map-summary"><CreditCard size={34} /><strong>교통비 계산 기준</strong><span><b>도보 0엔</b><small>{wonPrice(0, exchangeRate?.rate || null) || "약 0원"}</small></span><span><b>Osaka Metro 190~390엔</b><small>{exchangeRate ? `${wonPrice(190, exchangeRate.rate)}~${wonPrice(390, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>Osaka City Bus 210엔</b><small>{exchangeRate ? wonPrice(210, exchangeRate.rate) : "환율 확인 중"}</small></span><p>동선 메뉴에서 구간마다 이동수단과 실제 확인한 요금을 수정하면 총액이 자동으로 합산됩니다.</p></div> : <><MapView places={workspaceMode === "routes" ? routeMapPlaces : visiblePlaces} activeDay={workspaceMode === "routes" ? "route" : "all"} preview={workspaceMode === "places" ? picked : null} routeMode={workspaceMode === "routes"} onPick={workspaceMode === "places" && manual && writable ? setPicked : undefined} onSelect={workspaceMode === "places" ? id => { const found = places.find(place => place.id === id); if (found) setDraft({ ...found }); } : undefined} /><div className="map-note">{workspaceMode === "routes" ? routeMapLabel : "오사카 · 한국어 지명 우선"}</div></>}</section>
       {workspaceMode === "places" && draft && <aside className="detail-panel" aria-label={`${draft.name} 상세 정보`}><div className="detail-header"><div><span className="eyebrow">PLACE DETAILS</span><h2>{draft.name}</h2></div><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}>×</button></div><p className="detail-address">{draft.address || "주소가 없습니다."}</p><div className="detail-fields">
         <label>장소 이름<input value={draft.name} disabled={!writable} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
         <label>주소<input value={draft.address} disabled={!writable} onChange={event => setDraft({ ...draft, address: event.target.value })} /></label>

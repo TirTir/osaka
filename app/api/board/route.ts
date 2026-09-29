@@ -206,6 +206,17 @@ export async function DELETE(request: NextRequest) {
     const authorization = await authorizedTrip(request);
     if (!authorization) return error("목록을 수정할 권한이 없습니다.", 401);
     if (authorization.access === "view") return error("보기 링크로는 장소를 수정할 수 없습니다.", 403);
+    if (request.nextUrl.searchParams.has("trip")) {
+      if (authorization.access !== "owner") return error("목록 소유자만 여행 목록을 삭제할 수 있습니다.", 403);
+      await db().batch([
+        db().prepare("DELETE FROM route_stops WHERE variant_id IN (SELECT rv.id FROM route_variants rv JOIN itineraries i ON i.id = rv.itinerary_id WHERE i.trip_id = ?)").bind(authorization.trip.id),
+        db().prepare("DELETE FROM itinerary_shares WHERE itinerary_id IN (SELECT id FROM itineraries WHERE trip_id = ?)").bind(authorization.trip.id),
+        db().prepare("DELETE FROM route_variants WHERE itinerary_id IN (SELECT id FROM itineraries WHERE trip_id = ?)").bind(authorization.trip.id),
+        db().prepare("DELETE FROM itineraries WHERE trip_id = ?").bind(authorization.trip.id),
+        db().prepare("DELETE FROM trips WHERE id = ? AND owner_user_id = ?").bind(authorization.trip.id, authorization.trip.ownerUserId),
+      ]);
+      return NextResponse.json({ ok: true });
+    }
     const collectionId = request.nextUrl.searchParams.get("collectionId") || "";
     if (collectionId) {
       const collection = await db().prepare("SELECT id, is_default AS isDefault FROM place_collections WHERE id = ? AND trip_id = ?").bind(collectionId, authorization.trip.id).first<{ id: string; isDefault: number }>();

@@ -55,6 +55,7 @@ type Props = {
   currentTripId: string;
   currentTripTitle: string;
   boardToken: string;
+  yenToKrwRate: number | null;
   onRouteChange: (places: PlannerMapPlace[], label: string) => void;
 };
 
@@ -96,7 +97,12 @@ function suggestedFare(km: number, mode: TransportMode) {
   return 390;
 }
 
-export default function RoutePlanner({ currentTripId, currentTripTitle, boardToken, onRouteChange }: Props) {
+function wonPrice(yen: number, rate: number | null) {
+  if (!rate) return "";
+  return `약 ${(Math.round(yen * rate / 10) * 10).toLocaleString()}원`;
+}
+
+export default function RoutePlanner({ currentTripId, currentTripTitle, boardToken, yenToKrwRate, onRouteChange }: Props) {
   const [items, setItems] = useState<Itinerary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [itinerary, setItinerary] = useState<Itinerary | null>(null);
@@ -265,13 +271,13 @@ export default function RoutePlanner({ currentTripId, currentTripTitle, boardTok
           return <div key={stop.stopId} className="route-stop-wrap">
             {previous && estimate && <div className="route-leg-editor">
               <div className="route-leg-summary"><span><Clock3 size={14} /> 약 {estimate.minutes}분 · {estimate.km.toFixed(1)}km</span><a href={`https://www.google.com/maps/dir/?api=1&origin=${previous.lat},${previous.lon}&destination=${stop.lat},${stop.lon}&travelmode=${mapsMode}`} target="_blank" rel="noreferrer">구글 지도 경로</a></div>
-              <div className="route-leg-controls"><Select value={mode} disabled={!owner} onValueChange={value => void saveLeg(stop, value as TransportMode)}><SelectTrigger aria-label={`${previous.name}에서 ${stop.name}까지 이동수단`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="walk">도보</SelectItem><SelectItem value="rail">지하철·전철</SelectItem><SelectItem value="bus">버스</SelectItem><SelectItem value="taxi">택시</SelectItem></SelectContent></Select>{owner ? <label><span>예상 요금</span><input type="number" min="0" step="10" value={stop.legFareYen || 0} onChange={event => setStops(current => current.map(item => item.stopId === stop.stopId ? { ...item, legFareYen: Number(event.target.value) } : item))} onBlur={event => void saveLeg(stop, mode, Number(event.target.value))} /><em>엔</em></label> : <strong>{modeLabels[mode]} · {stop.legFareYen.toLocaleString()}엔</strong>}</div>
+              <div className="route-leg-controls"><Select value={mode} disabled={!owner} onValueChange={value => void saveLeg(stop, value as TransportMode)}><SelectTrigger aria-label={`${previous.name}에서 ${stop.name}까지 이동수단`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="walk">도보</SelectItem><SelectItem value="rail">지하철·전철</SelectItem><SelectItem value="bus">버스</SelectItem><SelectItem value="taxi">택시</SelectItem></SelectContent></Select>{owner ? <div className="route-fare-field"><label><span>예상 요금</span><input type="number" min="0" step="10" value={stop.legFareYen || 0} onChange={event => setStops(current => current.map(item => item.stopId === stop.stopId ? { ...item, legFareYen: Number(event.target.value) } : item))} onBlur={event => void saveLeg(stop, mode, Number(event.target.value))} /><em>엔</em></label>{yenToKrwRate && <small>{wonPrice(stop.legFareYen || 0, yenToKrwRate)}</small>}</div> : <strong className="readonly-fare">{modeLabels[mode]} · {stop.legFareYen.toLocaleString()}엔{yenToKrwRate && <small>{wonPrice(stop.legFareYen, yenToKrwRate)}</small>}</strong>}</div>
             </div>}
             <div className="route-stop"><span className="place-number">{index + 1}</span><div><strong>{stop.name}</strong><span>{stop.address || "주소 미등록"}</span></div>{owner && <div className="route-stop-actions"><button aria-label="위로 이동" disabled={index === 0} onClick={() => void moveStop(stop.stopId, -1)}><ArrowUp size={14} /></button><button aria-label="아래로 이동" disabled={index === activeStops.length - 1} onClick={() => void moveStop(stop.stopId, 1)}><ArrowDown size={14} /></button><button aria-label="동선에서 제거" onClick={() => void removeStop(stop.stopId)}><Trash2 size={14} /></button></div>}</div>
           </div>;
         })}</div> : <div className="route-placeholder">저장한 장소를 아래에서 골라 동선을 시작하세요.</div>}
 
-        {activeStops.length > 1 && <div className="fare-total"><span><Banknote size={18} /> 이 동선의 예상 교통비</span><strong>{totalFare.toLocaleString()}엔</strong><small>1인 기준 · 입력한 구간 요금의 합계</small></div>}
+        {activeStops.length > 1 && <div className="fare-total"><span><Banknote size={18} /> 이 동선의 예상 교통비</span><div className="fare-total-amount"><strong>{totalFare.toLocaleString()}엔</strong>{yenToKrwRate && <span>{wonPrice(totalFare, yenToKrwRate)}</span>}</div><small>1인 기준 · 입력한 구간 요금의 합계</small></div>}
 
         {owner && <div className="saved-place-picker"><div className="saved-place-heading"><div><strong>저장한 장소</strong><span>카테고리를 고른 뒤 눌러서 동선에 추가하세요</span></div><em>{availablePlaces.length}곳</em></div><div className="collection-filter"><button className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")}>전체</button>{collections.map(collection => <button key={collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name}</button>)}</div>{places.length === 0 ? <p className="saved-place-empty">장소 목록에 저장한 장소가 없습니다. 먼저 장소 목록에서 장소를 저장해 주세요.</p> : availablePlaces.length ? <div className="saved-place-list">{availablePlaces.map(place => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button key={place.id} onClick={() => void addStop(place.id)} disabled={busy}><MapPin size={16} /><span><strong>{place.name}</strong><small>{collection ? `${collection.name} · ` : "기본 · "}{place.address || "주소 미등록"}</small></span><Plus size={16} /></button>; })}</div> : <p className="saved-place-empty">이 카테고리에서 추가할 수 있는 장소가 없습니다.</p>}</div>}
         <p className="estimate-note">시간과 요금은 계획용 예상치입니다. 철도는 Osaka Metro 거리 요금, 버스는 Osaka City Bus 일반요금을 기준으로 제안하며 실제 노선·환승에 따라 달라질 수 있습니다.</p>
