@@ -46,8 +46,9 @@ export const users = sqliteTable("users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   passwordSalt: text("password_salt").notNull(),
+  chatgptUserId: text("chatgpt_user_id"),
   createdAt: text("created_at").notNull(),
-});
+}, table => [uniqueIndex("idx_users_chatgpt_user_id").on(table.chatgptUserId)]);
 
 export const sessions = sqliteTable("sessions", {
   tokenHash: text("token_hash").primaryKey(),

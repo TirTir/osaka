@@ -22,7 +22,7 @@ async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   return data;
 }
 
-export default function TripBoard() {
+export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: string }) {
   const [user, setUser] = useState<{ id: string; email: string } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
@@ -83,7 +83,14 @@ export default function TripBoard() {
     let cancelled = false;
     void (async () => {
       try {
-        const auth = await api("/api/auth");
+        let auth = await api("/api/auth");
+        const pageUrl = new URL(window.location.href);
+        if (!auth.user && pageUrl.searchParams.get("auth") === "chatgpt") {
+          auth = await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "chatgpt" }) });
+          pageUrl.searchParams.delete("auth");
+          window.history.replaceState(null, "", `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`);
+          setMessage("ChatGPT 계정으로 로그인했습니다.");
+        }
         if (cancelled) return;
         setUser(auth.user || null);
         const hash = new URLSearchParams(window.location.hash.slice(1));
@@ -325,6 +332,23 @@ export default function TripBoard() {
     setRouteMapLabel(label);
   }, []);
 
+  function renderAuthPanel(title: string, description: string) {
+    return <section className="auth-form" aria-label="계정 로그인">
+      <strong>{title}</strong>
+      <p>{description}</p>
+      <a className="chatgpt-login" href={chatGPTSignInHref} target="_top"><span aria-hidden="true">GPT</span>ChatGPT로 계속하기</a>
+      <div className="auth-divider"><span>또는</span></div>
+      <form className="email-auth-form" onSubmit={authenticate}>
+        <strong className="email-auth-title">{authMode === "signup" ? "이메일로 회원가입" : "이메일로 로그인"}</strong>
+        <label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label>
+        <label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label>
+        {authMode === "signup" && <small>비밀번호는 10자 이상 입력해 주세요.</small>}
+        <button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "이메일로 로그인"}</button>
+        <button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button>
+      </form>
+    </section>;
+  }
+
   return <main className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">大阪</span><span>오사카 여행 지도</span></div>{user && <nav className="main-menu" aria-label="주 메뉴"><button className={workspaceMode === "places" ? "active" : ""} onClick={() => setWorkspaceMode("places")}><List size={16} /> 장소</button><button className={workspaceMode === "routes" ? "active" : ""} onClick={() => { setWorkspaceMode("routes"); setDraft(null); }}><Route size={16} /> 동선</button><button className={workspaceMode === "guide" ? "active" : ""} onClick={() => { setWorkspaceMode("guide"); setDraft(null); }}><CreditCard size={16} /> 교통비</button></nav>}<div className="header-actions">{user && <><span className="account-email">{user.email}</span><button className="share-button" onClick={signOut} disabled={busy}><LogOut size={15} /> 로그아웃</button></>}</div></header>
     <div className="workspace">
@@ -332,8 +356,8 @@ export default function TripBoard() {
         <div className="panel-heading"><p className="eyebrow">OSAKA TRIP BOARD</p>{workspaceMode === "places" && trip && access === "owner" ? editingTripTitle ? <input className="trip-title-editor" aria-label="여행 목록 이름" autoFocus value={tripTitleDraft} onChange={event => setTripTitleDraft(event.target.value)} onBlur={() => void saveTripTitle()} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setTripTitleDraft(trip.title); setEditingTripTitle(false); } }} /> : <button className="trip-title-button" onClick={() => setEditingTripTitle(true)}><h1>{trip.title}</h1><Pencil size={16} /><span>이름 수정</span></button> : <h1>{workspaceMode === "routes" ? "여행 동선 계획" : workspaceMode === "guide" ? "오사카 교통비 안내" : trip?.title || "가고 싶은 곳을 모아보세요"}</h1>}<p className="intro">{workspaceMode === "routes" ? "카테고리별로 장소를 골라 동선에 추가하고 구간마다 이동수단을 정하세요." : workspaceMode === "guide" ? "노선마다 다른 요금과 환승 방식을 여행 전에 쉽게 확인하세요." : trip ? (access === "owner" ? "기본 카테고리와 사용자 지정 카테고리로 장소를 관리할 수 있어요." : access === "view" ? "공유받은 보기 전용 장소 목록" : "공유받은 편집 장소 목록") : "가고 싶은 장소를 먼저 모은 뒤 나만의 동선을 만들 수 있어요."}</p></div>
         {workspaceMode === "places" ? <>
         {user && <div className="my-trips"><div className="my-trips-heading"><strong>여행 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <button key={item.id} className={boardId === item.id && !shareToken ? "active" : ""} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳{item.access && item.access !== "owner" ? ` · ${item.ownerEmail || "다른 사용자"} 공유` : ""}</span></button>)}</div>}</div>}
-        {!user && legacy && trip && <form className="auth-form" onSubmit={authenticate}><strong>기존 목록을 내 계정에 저장</strong><p>회원가입하거나 로그인한 뒤 목록을 가져올 수 있어요.</p><label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label><label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label><button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "로그인"}</button><button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button></form>}
-        {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? <form className="auth-form" onSubmit={authenticate}><strong>{authMode === "signup" ? "회원가입" : "로그인"}</strong><p>계정마다 비공개 여행 목록을 만들 수 있어요.</p><label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label><label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label>{authMode === "signup" && <small>10자 이상 입력해 주세요.</small>}<button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "로그인"}</button><button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button></form> : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
+        {!user && legacy && trip && renderAuthPanel("기존 목록을 내 계정에 저장", "원하는 방법으로 로그인한 뒤 이 목록을 가져올 수 있어요.")}
+        {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? renderAuthPanel("로그인 또는 회원가입", "ChatGPT 계정이나 이메일 계정으로 여행 목록을 관리하세요.") : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
           {legacy && user && access === "edit" && <div className="start-box"><p>이전에 만든 목록입니다. 내 계정으로 가져오면 비공개 목록에 추가되고 기존 공유 링크는 만료됩니다.</p><button className="primary-button" onClick={claimTrip} disabled={busy}>내 목록으로 가져오기</button></div>}
           {access === "owner" && <div className="share-controls"><button onClick={() => shareTrip("view")} disabled={busy}><Copy size={15} /> 보기 링크 복사</button><button onClick={() => shareTrip("edit")} disabled={busy}><Copy size={15} /> 편집 링크 복사</button><small>링크를 가진 사람만 볼 수 있어요. 새 링크를 만들면 이전 링크가 교체됩니다.</small></div>}
           {access === "owner" && <section className="trip-share-manager"><div className="collection-heading"><strong>공유 사용자</strong><span>{tripShares.length}명</span></div><form onSubmit={event => void saveUserShare(event)}><input type="email" value={shareUserEmail} onChange={event => setShareUserEmail(event.target.value)} placeholder="가입한 사용자 이메일" required /><Select value={shareUserRole} onValueChange={value => setShareUserRole(value as "view" | "edit")}><SelectTrigger aria-label="공유 권한"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button disabled={busy}><Plus size={14} /> 추가</button></form>{tripShares.length > 0 ? <div className="trip-share-list">{tripShares.map(share => <div key={share.id}><span>{share.email}</span><Select value={share.role} onValueChange={value => void saveUserShare(undefined, share, value as "view" | "edit")}><SelectTrigger aria-label={`${share.email} 권한`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button aria-label={`${share.email} 공유 해제`} onClick={() => void removeUserShare(share)}>×</button></div>)}</div> : <p>이메일로 공유하면 여기에서 권한을 변경하거나 해제할 수 있습니다.</p>}</section>}

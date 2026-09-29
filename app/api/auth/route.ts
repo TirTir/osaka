@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { constantTimeEqual, createSession, db, getSessionUser, normalizeEmail, passwordHash, randomToken, sameOrigin, SESSION_COOKIE, sha256, validEmail } from "@/auth/server";
+import { constantTimeEqual, createSession, db, getChatGPTIdentity, getOrCreateChatGPTUser, getSessionUser, normalizeEmail, passwordHash, randomToken, sameOrigin, SESSION_COOKIE, sha256, validEmail } from "@/auth/server";
 
 const fail = (message: string, status: number) => NextResponse.json({ error: message }, { status });
 
@@ -12,10 +12,19 @@ export async function POST(request: NextRequest) {
   if (!sameOrigin(request)) return fail("요청 출처를 확인하지 못했습니다.", 403);
   try {
     const body = await request.json() as Record<string, unknown>;
+    const action = body.action;
+    if (action === "chatgpt") {
+      const identity = getChatGPTIdentity(request);
+      if (!identity) return fail("ChatGPT 로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.", 401);
+      const user = await getOrCreateChatGPTUser(identity);
+      const session = await createSession(user.id);
+      const response = NextResponse.json({ user });
+      response.cookies.set(SESSION_COOKIE, session.token, { httpOnly: true, secure: request.nextUrl.protocol === "https:", sameSite: "lax", path: "/", expires: new Date(session.expiresAt) });
+      return response;
+    }
     const email = normalizeEmail(body.email);
     const password = typeof body.password === "string" ? body.password : "";
     if (!validEmail(email) || password.length < 10 || password.length > 128) return fail("이메일과 10자 이상 비밀번호를 확인해 주세요.", 400);
-    const action = body.action;
     let user: { id: string; email: string };
     if (action === "signup") {
       const existing = await db().prepare("SELECT id FROM users WHERE email = ?").bind(email).first();

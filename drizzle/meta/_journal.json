@@ -36,6 +36,13 @@
       "when": 1790580541674,
       "tag": "0004_sloppy_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790644065973,
+      "tag": "0005_regular_emma_frost",
+      "breakpoints": true
     }
   ]
 }

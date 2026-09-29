@@ -103,6 +103,13 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .auth-form small,.share-controls small { color:#68808a; font-size:12px; line-height:1.5; }
 .auth-form .primary-button { margin-top:4px; }
 .auth-form .text-button { align-self:flex-start; margin-top:2px; }
+.chatgpt-login { min-height:44px; display:flex; align-items:center; justify-content:center; gap:10px; border:1px solid #173343; border-radius:10px; color:#fff; background:#173343; font-size:14px; font-weight:800; text-decoration:none; }
+.chatgpt-login:hover { background:#21495a; }
+.chatgpt-login span { width:28px; height:28px; display:grid; place-items:center; border:1px solid #ffffff66; border-radius:50%; font-size:10px; letter-spacing:.04em; }
+.auth-divider { display:flex; align-items:center; gap:10px; color:#7a8c91; font-size:12px; }
+.auth-divider::before,.auth-divider::after { content:""; height:1px; flex:1; background:#d8e5e0; }
+.email-auth-form { display:flex; flex-direction:column; gap:11px; }
+.auth-form .email-auth-title { font-size:14px; color:#29444b; }
 .share-controls { display:flex; flex-wrap:wrap; gap:8px; padding:0 28px 23px; }
 .share-controls small { flex-basis:100%; }
 .trip-share-manager { display:flex; flex-direction:column; gap:10px; margin:0 28px 20px; padding:14px; border:1px solid #d8e4e1; border-radius:12px; background:#f8fbf9; }

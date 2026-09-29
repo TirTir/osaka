@@ -7,6 +7,7 @@ const SESSION_DAYS = 30;
 const ITERATIONS = 100_000;
 
 export type User = { id: string; email: string };
+export type ChatGPTIdentity = { userId: string; email: string };
 
 export function db() {
   if (!env.DB) throw new Error("D1 binding unavailable");
@@ -48,6 +49,38 @@ export async function getSessionUser(request: NextRequest): Promise<User | null>
   if (!/^[0-9a-f]{64}$/.test(token)) return null;
   return await db().prepare("SELECT users.id, users.email FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?")
     .bind(await sha256(token), new Date().toISOString()).first<User>();
+}
+
+export function getChatGPTIdentity(request: NextRequest): ChatGPTIdentity | null {
+  const userId = request.headers.get("oai-authenticated-user-id")?.trim() || "";
+  const email = normalizeEmail(request.headers.get("oai-authenticated-user-email"));
+  if (!userId || !validEmail(email)) return null;
+  return { userId, email };
+}
+
+export async function getOrCreateChatGPTUser(identity: ChatGPTIdentity): Promise<User> {
+  const byIdentity = await db().prepare("SELECT id, email FROM users WHERE chatgpt_user_id = ?")
+    .bind(identity.userId).first<User>();
+  if (byIdentity) return byIdentity;
+
+  const byEmail = await db().prepare("SELECT id, email, chatgpt_user_id AS chatgptUserId FROM users WHERE email = ?")
+    .bind(identity.email).first<User & { chatgptUserId: string | null }>();
+  if (byEmail) {
+    if (byEmail.chatgptUserId && byEmail.chatgptUserId !== identity.userId) {
+      throw new Error("This email is already linked to another ChatGPT account.");
+    }
+    await db().prepare("UPDATE users SET chatgpt_user_id = ? WHERE id = ? AND chatgpt_user_id IS NULL")
+      .bind(identity.userId, byEmail.id).run();
+    return { id: byEmail.id, email: byEmail.email };
+  }
+
+  const user = { id: crypto.randomUUID(), email: identity.email };
+  await db().prepare("INSERT OR IGNORE INTO users (id, email, password_hash, password_salt, chatgpt_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(user.id, user.email, randomToken(), randomToken(), identity.userId, new Date().toISOString()).run();
+  const created = await db().prepare("SELECT id, email FROM users WHERE chatgpt_user_id = ? OR email = ?")
+    .bind(identity.userId, identity.email).first<User>();
+  if (!created) throw new Error("Could not create ChatGPT user.");
+  return created;
 }
 
 export async function createSession(userId: string) {
