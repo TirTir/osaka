@@ -31,9 +31,6 @@ async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
 export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: string }) {
   const [user, setUser] = useState<{ id: string; email: string } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [myTrips, setMyTrips] = useState<Trip[]>([]);
   const [boardId, setBoardId] = useState("");
   const [shareToken, setShareToken] = useState("");
@@ -94,7 +91,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
       try {
         let auth = await api("/api/auth");
         const pageUrl = new URL(window.location.href);
-        if (!auth.user && pageUrl.searchParams.get("auth") === "chatgpt") {
+        if (pageUrl.searchParams.get("auth") === "chatgpt") {
           auth = await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "chatgpt" }) });
           pageUrl.searchParams.delete("auth");
           window.history.replaceState(null, "", `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`);
@@ -106,7 +103,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
         const id = hash.get("board") || "";
         const token = hash.get("trip") || (!id ? window.localStorage.getItem("osaka-trip-token") || "" : "");
         let opened = false;
-        if (token) {
+        if (token && auth.user) {
           try { await loadBoard("", token); opened = true; }
           catch (cause) {
             if (hash.get("trip")) throw cause;
@@ -146,24 +143,13 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
   const defaultCollectionId = collections.find(collection => collection.isDefault)?.id || "";
   const visiblePlaces = useMemo(() => places.filter(place => selectedCollectionId === "all" || place.collectionId === selectedCollectionId || (selectedCollectionId === defaultCollectionId && !place.collectionId)), [places, selectedCollectionId, defaultCollectionId]);
 
-  async function authenticate(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setMessage("");
-    try {
-      const data = await api("/api/auth", { method: "POST", body: JSON.stringify({ action: authMode, email, password }) });
-      setUser(data.user || null); setPassword("");
-      const trips = await loadTrips();
-      if (!trip && trips.length) { await loadBoard(trips[0].id, ""); window.location.hash = `board=${trips[0].id}`; }
-      setMessage(authMode === "signup" ? "계정을 만들었습니다. 목록은 기본적으로 비공개입니다." : "로그인했습니다.");
-    } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
-  }
-
   async function signOut() {
     setBusy(true); setMessage("");
     try {
       await api("/api/auth", { method: "DELETE" });
       setUser(null); setMyTrips([]); setTrip(null); setPlaces([]); setCollections([]); setTripShares([]); setAccess(null); setLegacy(false); setBoardId(""); setShareToken("");
-      window.location.hash = "";
-      setMessage("로그아웃했습니다.");
+      window.localStorage.removeItem("osaka-trip-token");
+      window.location.assign("/signout-with-chatgpt?return_to=%2F");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
 
@@ -377,15 +363,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
       <strong>{title}</strong>
       <p>{description}</p>
       <a className="chatgpt-login" href={chatGPTSignInHref} target="_top"><span aria-hidden="true">GPT</span>ChatGPT로 계속하기</a>
-      <div className="auth-divider"><span>또는</span></div>
-      <form className="email-auth-form" onSubmit={authenticate}>
-        <strong className="email-auth-title">{authMode === "signup" ? "이메일로 회원가입" : "이메일로 로그인"}</strong>
-        <label>이메일<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /></label>
-        <label>비밀번호<input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength={10} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required /></label>
-        {authMode === "signup" && <small>비밀번호는 10자 이상 입력해 주세요.</small>}
-        <button className="primary-button" disabled={busy}>{authMode === "signup" ? "계정 만들기" : "이메일로 로그인"}</button>
-        <button type="button" className="text-button" onClick={() => setAuthMode(authMode === "signup" ? "login" : "signup")}>{authMode === "signup" ? "이미 계정이 있나요? 로그인" : "처음인가요? 회원가입"}</button>
-      </form>
+      <small>처음 로그인하면 계정이 자동으로 만들어집니다. 여행 목록은 기본적으로 비공개입니다.</small>
     </section>;
   }
 
@@ -398,7 +376,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
         {workspaceMode === "places" ? <>
         {user && <div className="my-trips"><div className="my-trips-heading"><strong>여행 목록</strong><button onClick={createTrip} disabled={busy}><Plus size={15} /> 새 목록</button></div>{myTrips.length > 0 && <div className="my-trips-list">{myTrips.map(item => <div className="trip-list-item" key={item.id}><button className={`trip-select ${boardId === item.id && !shareToken ? "active" : ""}`} onClick={() => selectTrip(item.id)}>{item.title} <span>{item.placeCount || 0}곳{item.access && item.access !== "owner" ? ` · ${item.ownerEmail || "다른 사용자"} 공유` : ""}</span></button>{item.access === "owner" && <button className="trip-delete" aria-label={`${item.title} 여행 목록 삭제`} onClick={() => void removeTrip(item)} disabled={busy}><Trash2 size={13} /></button>}</div>)}</div>}</div>}
         {!user && legacy && trip && renderAuthPanel("기존 목록을 내 계정에 저장", "원하는 방법으로 로그인한 뒤 이 목록을 가져올 수 있어요.")}
-        {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? renderAuthPanel("로그인 또는 회원가입", "ChatGPT 계정이나 이메일 계정으로 여행 목록을 관리하세요.") : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
+        {!authChecked ? <div className="start-box">불러오는 중...</div> : !trip && !user ? renderAuthPanel("로그인 또는 회원가입", "본인의 ChatGPT 계정으로 로그인해 여행 목록을 관리하세요.") : !trip ? <div className="start-box"><p>첫 여행 목록을 만들어 장소를 저장해 보세요.</p><button className="primary-button" onClick={createTrip} disabled={busy}>새 여행 만들기</button></div> : <>
           {legacy && user && access === "edit" && <div className="start-box"><p>이전에 만든 목록입니다. 내 계정으로 가져오면 비공개 목록에 추가되고 기존 공유 링크는 만료됩니다.</p><button className="primary-button" onClick={claimTrip} disabled={busy}>내 목록으로 가져오기</button></div>}
           {access === "owner" && <div className="share-controls"><button onClick={() => shareTrip("view")} disabled={busy}><Copy size={15} /> 보기 링크 복사</button><button onClick={() => shareTrip("edit")} disabled={busy}><Copy size={15} /> 편집 링크 복사</button><small>링크를 가진 사람만 볼 수 있어요. 새 링크를 만들면 이전 링크가 교체됩니다.</small></div>}
           {access === "owner" && <section className="trip-share-manager"><div className="collection-heading"><strong>공유 사용자</strong><span>{tripShares.length}명</span></div><form onSubmit={event => void saveUserShare(event)}><input type="email" value={shareUserEmail} onChange={event => setShareUserEmail(event.target.value)} placeholder="가입한 사용자 이메일" required /><Select value={shareUserRole} onValueChange={value => setShareUserRole(value as "view" | "edit")}><SelectTrigger aria-label="공유 권한"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button disabled={busy}><Plus size={14} /> 추가</button></form>{tripShares.length > 0 ? <div className="trip-share-list">{tripShares.map(share => <div key={share.id}><span>{share.email}</span><Select value={share.role} onValueChange={value => void saveUserShare(undefined, share, value as "view" | "edit")}><SelectTrigger aria-label={`${share.email} 권한`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button aria-label={`${share.email} 공유 해제`} onClick={() => void removeUserShare(share)}>×</button></div>)}</div> : <p>이메일로 공유하면 여기에서 권한을 변경하거나 해제할 수 있습니다.</p>}</section>}

@@ -45,10 +45,12 @@ export function constantTimeEqual(a: string, b: string) {
 }
 
 export async function getSessionUser(request: NextRequest): Promise<User | null> {
+  const identity = getChatGPTIdentity(request);
+  if (!identity) return null;
   const token = request.cookies.get(SESSION_COOKIE)?.value || "";
   if (!/^[0-9a-f]{64}$/.test(token)) return null;
-  return await db().prepare("SELECT users.id, users.email FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?")
-    .bind(await sha256(token), new Date().toISOString()).first<User>();
+  return await db().prepare("SELECT users.id, users.email FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.chatgpt_user_id = ?")
+    .bind(await sha256(token), new Date().toISOString(), identity.userId).first<User>();
 }
 
 export function getChatGPTIdentity(request: NextRequest): ChatGPTIdentity | null {
@@ -77,8 +79,8 @@ export async function getOrCreateChatGPTUser(identity: ChatGPTIdentity): Promise
   const user = { id: crypto.randomUUID(), email: identity.email };
   await db().prepare("INSERT OR IGNORE INTO users (id, email, password_hash, password_salt, chatgpt_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(user.id, user.email, randomToken(), randomToken(), identity.userId, new Date().toISOString()).run();
-  const created = await db().prepare("SELECT id, email FROM users WHERE chatgpt_user_id = ? OR email = ?")
-    .bind(identity.userId, identity.email).first<User>();
+  const created = await db().prepare("SELECT id, email FROM users WHERE chatgpt_user_id = ?")
+    .bind(identity.userId).first<User>();
   if (!created) throw new Error("Could not create ChatGPT user.");
   return created;
 }

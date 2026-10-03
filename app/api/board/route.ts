@@ -10,6 +10,8 @@ const asColor = (value: unknown) => /^#[0-9a-f]{6}$/i.test(asText(value, 7)) ? a
 const error = (message: string, status: number) => NextResponse.json({ error: message }, { status });
 
 async function authorizedTrip(request: NextRequest): Promise<{ trip: Trip; access: Access } | null> {
+  const user = await getSessionUser(request);
+  if (!user) return null;
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
   if (/^[0-9a-f]{64}$/.test(token)) {
     const hash = await sha256(token);
@@ -18,7 +20,6 @@ async function authorizedTrip(request: NextRequest): Promise<{ trip: Trip; acces
     if (trip) return { trip, access: trip.tokenHash === hash ? "edit" : "view" };
   }
   const id = request.nextUrl.searchParams.get("id") || "";
-  const user = await getSessionUser(request);
   if (user && id) {
     const trip = await db().prepare(`
       SELECT t.id, t.title, t.created_at AS createdAt, t.owner_user_id AS ownerUserId, ts.role AS sharedRole
