@@ -1,6 +1,9 @@
 import TripBoard from "./trip-board";
-import { chatGPTSignInPath } from "./chatgpt-auth";
+import { chatGPTSignInPath, requireChatGPTUser } from "./chatgpt-auth";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  await requireChatGPTUser("/?auth=chatgpt");
   return <TripBoard chatGPTSignInHref={chatGPTSignInPath("/?auth=chatgpt")} />;
 }
