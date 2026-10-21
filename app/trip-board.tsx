@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiResponse } from "@/lib/api-response";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, CreditCard, List, LogOut, MapPin, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Route, Search, Trash2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -23,9 +24,7 @@ function wonPrice(yen: number, rate: number | null) {
 
 async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
-  const data = await response.json() as ApiResponse;
-  if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
-  return data;
+  return readApiResponse<ApiResponse>(response);
 }
 
 export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: string }) {

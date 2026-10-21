@@ -46,6 +46,9 @@ export async function GET(request: NextRequest) {
   if (query.length < 2) return fail("두 글자 이상 입력해 주세요.", 400);
   const curatedPlaces = knownPlaces(query);
   if (curatedPlaces.length) return NextResponse.json({ places: curatedPlaces, provider: "Curated" });
+  // Accept common Korean spellings and abbreviations for Universal Studios Japan.
+  const searchQuery = /^(유니버[설셜](?:\s*스튜디오)?(?:\s*(?:재팬|저팬|일본))?|usj|universal\s+studios\s+japan)$/i.test(query)
+    ? "Universal Studios Japan" : query;
   const key = env.GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY;
 
   try {
@@ -62,7 +65,7 @@ export async function GET(request: NextRequest) {
         "돈키호테": "ドン・キホーテ",
         "유니버설 스튜디오": "ユニバーサル・スタジオ・ジャパン",
       };
-      const localizedQuery = Object.entries(aliases).reduce((value, [from, to]) => value.replaceAll(from, to), query)
+      const localizedQuery = Object.entries(aliases).reduce((value, [from, to]) => value.replaceAll(from, to), searchQuery)
         .replaceAll(/dotombori/gi, "Dotonbori")
         .replaceAll(/doutonbori/gi, "Dotonbori");
       const url = new URL("https://photon.komoot.io/api/");
@@ -88,7 +91,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ places, provider: "Photon" });
     }
     const url = new URL("https://api.geoapify.com/v1/geocode/search");
-    url.searchParams.set("text", `${query} Osaka Japan`);
+    url.searchParams.set("text", `${searchQuery} Osaka Japan`);
     url.searchParams.set("filter", "rect:135.25,34.45,135.80,35.00");
     url.searchParams.set("bias", "proximity:135.5013,34.6688");
     url.searchParams.set("lang", "ko");

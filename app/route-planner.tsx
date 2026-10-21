@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiResponse } from "@/lib/api-response";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Banknote, CalendarDays, Clock3, MapPin, Pencil, Plus, Share2, Trash2, Users } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -66,9 +67,7 @@ const modeLabels: Record<TransportMode, string> = { walk: "도보", rail: "지�
 
 async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
-  const data = await response.json() as ApiResponse;
-  if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
-  return data;
+  return readApiResponse<ApiResponse>(response);
 }
 
 function distanceKm(a: Stop, b: Stop) {
