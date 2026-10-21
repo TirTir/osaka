@@ -1,5 +1,6 @@
 "use client";
 
+import { searchGooglePlaces, googlePlaceDetails, type GoogleSearchPlace } from "@/lib/google-places";
 import { readApiResponse } from "@/lib/api-response";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, CreditCard, List, LogOut, MapPin, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Route, Search, Trash2 } from "lucide-react";
@@ -9,7 +10,7 @@ import RoutePlanner, { type PlannerMapPlace } from "./route-planner";
 import TransportGuide from "./transport-guide";
 
 type Place = { id: string; sourceId?: string; collectionId: string | null; name: string; address: string; category: string; lat: number; lon: number; openingHours: string; menuUrl: string; websiteUrl: string; notes: string; day: number | null; position: number };
-type SearchPlace = Omit<Place, "id" | "collectionId" | "notes" | "day" | "position">;
+type SearchPlace = Omit<Place, "id" | "collectionId" | "notes" | "day" | "position"> & Partial<Pick<GoogleSearchPlace, "googleMapsUrl" | "attributions">>;
 type Collection = { id: string; name: string; color: string; isDefault: number; position: number };
 type Trip = { id: string; title: string; createdAt?: string; placeCount?: number; access?: Access; ownerEmail?: string };
 type TripShare = { id: string; userId: string; email: string; role: "view" | "edit" };
@@ -47,7 +48,6 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
   const [tripTitleDraft, setTripTitleDraft] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchPlace[]>([]);
-  const [searchProvider, setSearchProvider] = useState("");
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -300,9 +300,9 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     event.preventDefault(); if (!query.trim()) return;
     setSearching(true); setMessage(""); setResults([]);
     try {
-      const data = await api(`/api/search?q=${encodeURIComponent(query.trim())}`) as ApiResponse & { places: SearchPlace[]; provider?: string };
-      setResults(data.places || []); setSearchProvider(data.provider || "");
-      if (!data.places?.length) setMessage("검색 결과가 없어요. 다른 이름으로 검색하거나 지도에서 직접 추가해 주세요.");
+      const places = await searchGooglePlaces(query);
+      setResults(places);
+      if (!places.length) setMessage("검색 결과가 없어요. 다른 이름으로 검색하거나 지도에서 직접 추가해 주세요.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setSearching(false); }
   }
 
@@ -312,10 +312,10 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     try {
       let completePlace = place;
       let detailWarning = "";
-      if (place.sourceId?.startsWith("geoapify:")) {
+      if (place.sourceId?.startsWith("google:")) {
         try {
-          const details = await api(`/api/place-details?id=${encodeURIComponent(place.sourceId.slice(9))}`) as ApiResponse & { openingHours?: string; websiteUrl?: string; category?: string };
-          completePlace = { ...place, openingHours: details.openingHours || "", websiteUrl: details.websiteUrl || "", category: details.category && details.category !== "place" ? details.category : place.category };
+          const details = await googlePlaceDetails(place.sourceId);
+          completePlace = { ...place, openingHours: details.openingHours || "", websiteUrl: details.websiteUrl || "" };
         } catch { detailWarning = " 영업시간은 불러오지 못해 비워뒀습니다."; }
       }
       const target = boardPath(boardId, shareToken);
@@ -381,14 +381,14 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
           {access === "owner" && <section className="trip-share-manager"><div className="collection-heading"><strong>공유 사용자</strong><span>{tripShares.length}명</span></div><form onSubmit={event => void saveUserShare(event)}><input type="email" value={shareUserEmail} onChange={event => setShareUserEmail(event.target.value)} placeholder="가입한 사용자 이메일" required /><Select value={shareUserRole} onValueChange={value => setShareUserRole(value as "view" | "edit")}><SelectTrigger aria-label="공유 권한"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button disabled={busy}><Plus size={14} /> 추가</button></form>{tripShares.length > 0 ? <div className="trip-share-list">{tripShares.map(share => <div key={share.id}><span>{share.email}</span><Select value={share.role} onValueChange={value => void saveUserShare(undefined, share, value as "view" | "edit")}><SelectTrigger aria-label={`${share.email} 권한`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="view">보기</SelectItem><SelectItem value="edit">편집</SelectItem></SelectContent></Select><button aria-label={`${share.email} 공유 해제`} onClick={() => void removeUserShare(share)}>×</button></div>)}</div> : <p>이메일로 공유하면 여기에서 권한을 변경하거나 해제할 수 있습니다.</p>}</section>}
           <section className="collection-manager"><div className="collection-heading"><strong>장소 카테고리</strong><span>{collections.length}개</span></div><div className="collection-tabs"><button className={selectedCollectionId === "all" ? "active" : ""} onClick={() => setSelectedCollectionId("all")}>전체 <small>{places.length}</small></button>{collections.map(collection => <span className="collection-tab-wrap" key={collection.id}><button className={selectedCollectionId === collection.id ? "active" : ""} onClick={() => setSelectedCollectionId(collection.id)}><i style={{ backgroundColor: collection.color }} />{collection.name} <small>{places.filter(place => place.collectionId === collection.id || (collection.isDefault && !place.collectionId)).length}</small></button>{writable && !collection.isDefault && <span className="collection-tools"><button aria-label={`${collection.name} 이름 변경`} onClick={() => void renameCollection(collection)}><Pencil size={12} /></button><button aria-label={`${collection.name} 카테고리 삭제`} onClick={() => void removeCollection(collection)}>×</button></span>}</span>)}</div>{writable && <form className="collection-create" onSubmit={createCollection}><input value={newCollectionName} onChange={event => setNewCollectionName(event.target.value)} placeholder="사용자 지정 카테고리" maxLength={60} /><button disabled={busy || !newCollectionName.trim()}><Plus size={14} /> 추가</button></form>}</section>
           {writable && <><form className="search-form" onSubmit={search}><label htmlFor="place-search">장소 검색</label><div className="search-row"><input id="place-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="한글·일본어 가게, 숙소, 관광지 이름" /><button type="submit" disabled={searching}><Search size={17} /><span>{searching ? "검색 중" : "검색"}</span></button></div><p className="search-hint">한국어 지명을 우선 표시합니다. 자료가 없으면 현지어가 나올 수 있어요.</p><button type="button" className="text-button" onClick={() => { setManual(value => !value); setResults([]); }}>지도에서 직접 장소 추가</button></form>
-          {results.length > 0 && <div className="search-results"><div className="result-title">검색 결과 <span>{results.length}곳</span></div><p className="result-help">{searchProvider === "Geoapify" ? "저장할 때 등록된 영업시간과 웹사이트를 확인합니다." : "영업시간이 비어 있을 수 있어요. 저장 후 직접 입력할 수 있습니다."}</p>{results.map((place, index) => <div className="result-card" key={`${place.sourceId}-${index}`}><strong>{place.name}</strong><span>{place.address}</span><button onClick={() => addPlace(place)} disabled={busy}><Plus size={15} /> 저장</button></div>)}</div>}
+          {results.length > 0 && <div className="search-results"><div className="result-title">검색 결과 <span>{results.length}곳</span></div><p className="result-help">Google Maps 검색 결과입니다. 저장할 때 영업시간과 웹사이트를 확인합니다.</p>{results.map((place, index) => <div className="result-card" key={`${place.sourceId}-${index}`}><strong>{place.name}</strong><span>{place.address}</span>{place.googleMapsUrl && <a href={place.googleMapsUrl} target="_blank" rel="noreferrer">Google Maps에서 보기</a>}{place.attributions?.map((item, i) => <span key={i}>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.provider}</a> : item.provider}</span>)}<button onClick={() => addPlace(place)} disabled={busy}><Plus size={15} /> 저장</button></div>)}</div>}
           {manual && <form className="manual-form" onSubmit={addManual}><strong>지도에서 위치를 눌러 주세요</strong><p>{picked ? `${picked.lat.toFixed(5)}, ${picked.lon.toFixed(5)}` : "위치를 선택하면 여기에 좌표가 표시됩니다."}</p><input aria-label="장소 이름" placeholder="장소 이름" value={manualName} onChange={event => setManualName(event.target.value)} required /><input aria-label="주소" placeholder="주소 (선택)" value={manualAddress} onChange={event => setManualAddress(event.target.value)} /><button className="primary-button" disabled={busy || !picked}>장소 저장</button></form>}</>}
           <div className="panel-section-title"><h2>{selectedCollectionId === "all" ? "전체 장소" : collections.find(item => item.id === selectedCollectionId)?.name || "기본"}</h2><span>{visiblePlaces.length}곳</span></div>
           {visiblePlaces.length ? <div className="place-list">{visiblePlaces.map((place, index) => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button className={`place-card ${draft?.id === place.id ? "is-selected" : ""}`} key={place.id} onClick={() => setDraft({ ...place })}><span className="place-number">{index + 1}</span><span className="place-card-body"><span className="place-card-top"><strong>{place.name}</strong><em style={collection ? { color: collection.color, backgroundColor: `${collection.color}18` } : undefined}>{collection?.name || "기본"}</em></span><span className="place-card-address">{place.address || "주소 미등록"}</span><span className="place-card-meta">{place.openingHours ? "영업시간 있음" : "영업시간 미등록"}</span></span></button>; })}</div> : <div className="empty-card"><MapPin size={30} /><strong>아직 저장한 장소가 없어요</strong><p>{writable ? "가고 싶은 곳을 검색해 지도에 담아보세요." : "공유한 사람이 장소를 추가하면 여기에 표시됩니다."}</p></div>}
         </>}
         </> : workspaceMode === "routes" && user ? <RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} yenToKrwRate={exchangeRate?.rate || null} onRouteChange={handleRouteChange} /> : workspaceMode === "guide" && user ? <TransportGuide yenToKrwRate={exchangeRate?.rate || null} /> : null}
         {message && <p className="status-message" role="status">{message}</p>}
-        <div className="panel-footer">지도 데이터 © OpenStreetMap contributors · <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://photon.komoot.io/" target="_blank" rel="noreferrer">Photon</a> · <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Powered by Geoapify</a></div>
+        <div className="panel-footer">지도·장소 검색 <a href="https://maps.google.com/" target="_blank" rel="noreferrer">Google Maps</a></div>
       </section>
       <section className={`map-panel ${workspaceMode === "guide" ? "guide-map" : ""}`} aria-label={workspaceMode === "guide" ? "교통비 빠른 요약" : "오사카 지도"}>{workspaceMode === "guide" ? <div className="guide-map-summary"><CreditCard size={34} /><strong>교통비 계산 기준</strong><span><b>도보 0엔</b><small>{wonPrice(0, exchangeRate?.rate || null) || "약 0원"}</small></span><span><b>Osaka Metro 190~390엔</b><small>{exchangeRate ? `${wonPrice(190, exchangeRate.rate)}~${wonPrice(390, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>Osaka City Bus 210엔</b><small>{exchangeRate ? wonPrice(210, exchangeRate.rate) : "환율 확인 중"}</small></span><span><b>난카이 라피트 1,410~1,590엔</b><small>{exchangeRate ? `${wonPrice(1410, exchangeRate.rate)}~${wonPrice(1590, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>시내 1일권 620엔부터</b><small>{exchangeRate ? wonPrice(620, exchangeRate.rate) : "환율 확인 중"}</small></span><p>동선 메뉴에서 구간마다 이동수단과 실제 확인한 요금을 수정하면 총액이 자동으로 합산됩니다.</p></div> : <><MapView places={workspaceMode === "routes" ? routeMapPlaces : visiblePlaces} activeDay={workspaceMode === "routes" ? "route" : "all"} preview={workspaceMode === "places" ? picked : null} routeMode={workspaceMode === "routes"} onPick={workspaceMode === "places" && manual && writable ? setPicked : undefined} onSelect={workspaceMode === "places" ? id => { const found = places.find(place => place.id === id); if (found) setDraft({ ...found }); } : undefined} /><div className="map-note">{workspaceMode === "routes" ? routeMapLabel : "오사카 · Google 지도"}</div></>}</section>
       {workspaceMode === "places" && draft && <aside className="detail-panel" aria-label={`${draft.name} 상세 정보`}><div className="detail-header"><div><span className="eyebrow">PLACE DETAILS</span><h2>{draft.name}</h2></div><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}>×</button></div><p className="detail-address">{draft.address || "주소가 없습니다."}</p><div className="detail-fields">
