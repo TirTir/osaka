@@ -1,0 +1,1 @@
+ALTER TABLE `itinerary_shares` ADD `role` text DEFAULT 'view' NOT NULL;

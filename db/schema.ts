@@ -91,6 +91,7 @@ export const itineraryShares = sqliteTable("itinerary_shares", {
   id: text("id").primaryKey(),
   itineraryId: text("itinerary_id").notNull().references(() => itineraries.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: text("role").notNull().default("view"),
   createdAt: text("created_at").notNull(),
 }, table => [
   index("idx_itinerary_shares_user").on(table.userId),

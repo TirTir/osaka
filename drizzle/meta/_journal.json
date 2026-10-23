@@ -43,6 +43,13 @@
       "when": 1790644065973,
       "tag": "0005_regular_emma_frost",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792742412313,
+      "tag": "0006_burly_sumo",
+      "breakpoints": true
     }
   ]
 }

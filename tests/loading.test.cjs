@@ -163,3 +163,150 @@ test('batched itinerary reads preserve owner and viewer data boundaries', async 
   assert.equal((await routes.GET(f.request('/api/itineraries?id=plan', 'outsider'))).status, 403);
   f.sqlite.close();
 });
+
+function routeFixture() {
+  const f = fixture();
+  f.sqlite.exec(`
+    INSERT INTO itineraries(id,trip_id,owner_user_id,title,created_at) VALUES ('plan','trip','owner','여행 동선','2026-10-23');
+    INSERT INTO route_variants(id,itinerary_id,day,name,created_at) VALUES ('variant','plan',1,'Day 1','2026-10-23');
+    INSERT INTO route_stops(id,variant_id,place_id,position,created_at) VALUES ('stop','variant','usj',1,'2026-10-23');
+  `);
+  const routes = f.load('app/api/itineraries/route.ts');
+  const mutate = (method, user, body, suffix = '', headers = {}) => routes[method](f.request(`/api/itineraries${suffix}`, user, {
+    method, ...(method === 'DELETE' ? {} : { body: JSON.stringify({ itineraryId: 'plan', ...body }) }), headers,
+  }));
+  const read = (user, path = '?id=plan', headers = {}) => routes.GET(f.request(`/api/itineraries${path}`, user, { headers }));
+  return { ...f, routes, mutate, read };
+}
+
+test('sharing a travel list also lists its routes with original author and inherited role', async () => {
+  const f = routeFixture();
+  const list = await (await f.read('viewer', '?list=1')).json();
+  assert.equal(list.itineraries[0].id, 'plan');
+  assert.equal(list.itineraries[0].ownerEmail, 'owner@example.test');
+  assert.equal(list.itineraries[0].access, 'view');
+  assert.equal((await f.read('viewer')).status, 200);
+  assert.equal((await f.mutate('PATCH', 'viewer', { action: 'leg', stopId: 'stop', transportMode: 'rail', fareYen: 240 })).status, 403);
+  f.sqlite.prepare("UPDATE trip_shares SET role='edit' WHERE id='share'").run();
+  const editor = await (await f.read('viewer')).json();
+  assert.equal(editor.itinerary.access, 'edit');
+  assert.equal(editor.places.length, 1);
+  assert.equal(editor.shares.length, 0);
+  assert.equal((await f.mutate('PATCH', 'viewer', { action: 'leg', stopId: 'stop', transportMode: 'rail', fareYen: 240 })).status, 200);
+  f.sqlite.prepare("DELETE FROM trip_shares WHERE id='share'").run();
+  assert.equal((await f.read('viewer')).status, 403);
+  assert.deepEqual((await (await f.read('viewer', '?list=1')).json()).itineraries, []);
+  f.sqlite.close();
+});
+
+test('view and edit travel links also apply to routes and rotating a link revokes access', async () => {
+  const f = routeFixture();
+  assert.equal((await f.read('outsider')).status, 403);
+  const viewHeaders = { Authorization: `Bearer ${f.viewToken}` };
+  const editHeaders = { Authorization: `Bearer ${f.editToken}` };
+  const list = await (await f.read('outsider', '?list=1', viewHeaders)).json();
+  assert.equal(list.itineraries[0].access, 'view');
+  assert.equal((await f.read('outsider', '?id=plan', viewHeaders)).status, 200);
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'leg', stopId: 'stop', transportMode: 'walk', fareYen: 0 }, '', viewHeaders)).status, 403);
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'leg', stopId: 'stop', transportMode: 'walk', fareYen: 0 }, '', editHeaders)).status, 200);
+  f.sqlite.prepare("UPDATE trips SET token_hash='rotated' WHERE id='trip'").run();
+  assert.equal((await f.read('outsider', '?id=plan', editHeaders)).status, 403);
+  f.sqlite.close();
+});
+
+test('author can grant, downgrade and remove individual route access without transferring ownership', async () => {
+  const f = routeFixture();
+  assert.equal((await f.mutate('POST', 'owner', { action: 'share', email: 'outsider@example.test', role: 'edit' })).status, 200);
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'itinerary', title: '편집한 동선', dayCount: 1, ownerUserId: 'outsider' })).status, 200);
+  const edited = await (await f.read('outsider')).json();
+  assert.equal(edited.itinerary.title, '편집한 동선');
+  assert.equal(edited.itinerary.ownerUserId, 'owner');
+  assert.equal(edited.itinerary.ownerEmail, 'owner@example.test');
+  assert.equal((await f.mutate('POST', 'owner', { action: 'share', email: 'outsider@example.test', role: 'view' })).status, 200);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM itinerary_shares WHERE itinerary_id='plan' AND user_id='outsider'").get().count, 1);
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'itinerary', title: '수정 금지', dayCount: 1 })).status, 403);
+  assert.equal((await f.mutate('POST', 'outsider', { action: 'variant', day: 1 })).status, 403);
+  assert.equal((await f.mutate('POST', 'outsider', { action: 'stop', variantId: 'variant', placeId: 'usj' })).status, 403);
+  assert.equal((await f.mutate('DELETE', 'outsider', {}, '?itineraryId=plan&stopId=stop')).status, 403);
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'leg', stopId: 'stop', transportMode: 'taxi', fareYen: 1000 }, '', { Authorization: `Bearer ${f.editToken}` })).status, 403);
+  const row = f.sqlite.prepare("SELECT id FROM itinerary_shares WHERE itinerary_id='plan' AND user_id='outsider'").get();
+  assert.equal((await f.mutate('DELETE', 'owner', {}, `?itineraryId=plan&shareId=${row.id}`)).status, 200);
+  assert.equal((await f.read('outsider')).status, 403);
+  f.sqlite.close();
+});
+
+test('route editors can change stops but cannot share access or delete the original route', async () => {
+  const f = routeFixture();
+  await f.mutate('POST', 'owner', { action: 'share', email: 'outsider@example.test', role: 'edit' });
+  assert.equal((await f.mutate('POST', 'outsider', { action: 'stop', variantId: 'variant', placeId: 'usj' })).status, 201);
+  const editorStop = f.sqlite.prepare("SELECT id FROM route_stops WHERE id <> 'stop'").get();
+  assert.equal((await f.mutate('PATCH', 'outsider', { action: 'move', stopId: editorStop.id, direction: -1 })).status, 200);
+  assert.equal((await f.mutate('DELETE', 'outsider', {}, `?itineraryId=plan&stopId=${editorStop.id}`)).status, 200);
+  assert.equal((await f.mutate('POST', 'outsider', { action: 'share', email: 'viewer@example.test', role: 'edit' })).status, 403);
+  const share = f.sqlite.prepare("SELECT id FROM itinerary_shares WHERE user_id='outsider'").get();
+  assert.equal((await f.mutate('DELETE', 'outsider', {}, `?itineraryId=plan&shareId=${share.id}`)).status, 403);
+  assert.equal((await f.mutate('DELETE', 'outsider', {}, '?itineraryId=plan&delete=itinerary')).status, 403);
+  assert.ok(f.sqlite.prepare("SELECT id FROM itineraries WHERE id='plan'").get());
+  f.sqlite.close();
+});
+
+test('individual view overrides travel edit and can be reset to follow travel permissions', async () => {
+  const f = routeFixture();
+  f.sqlite.prepare("UPDATE trip_shares SET role='edit' WHERE id='share'").run();
+  const inherited = await (await f.read('owner')).json();
+  assert.equal(inherited.shares[0].source, 'trip');
+  assert.equal(inherited.shares[0].role, 'edit');
+  await f.mutate('POST', 'owner', { action: 'share', email: 'viewer@example.test', role: 'view' });
+  assert.equal((await (await f.read('viewer')).json()).itinerary.access, 'view');
+  const settings = await (await f.read('owner')).json();
+  assert.equal(settings.shares[0].source, 'itinerary');
+  assert.equal(settings.shares[0].inheritedRole, 'edit');
+  await f.mutate('DELETE', 'owner', {}, `?itineraryId=plan&shareId=${settings.shares[0].id}`);
+  assert.equal((await (await f.read('viewer')).json()).itinerary.access, 'edit');
+  f.sqlite.close();
+});
+
+test('viewers cannot create routes, and only the route author manages permissions even for a travel owner', async () => {
+  const f = routeFixture();
+  assert.equal((await f.mutate('POST', 'viewer', { action: 'create', tripId: 'trip' })).status, 403);
+  assert.equal((await f.mutate('POST', 'outsider', { action: 'create', tripId: 'trip' }, '', { Authorization: `Bearer ${f.viewToken}` })).status, 403);
+  f.sqlite.prepare("UPDATE trip_shares SET role='edit' WHERE id='share'").run();
+  const created = await (await f.mutate('POST', 'viewer', { action: 'create', tripId: 'trip' })).json();
+  assert.equal(created.itinerary.ownerUserId, 'viewer');
+  const sharedRoute = await (await f.read('owner', `?id=${created.itinerary.id}`)).json();
+  assert.equal(sharedRoute.itinerary.access, 'edit');
+  assert.equal(sharedRoute.itinerary.ownerEmail, 'viewer@example.test');
+  assert.equal((await f.mutate('POST', 'owner', { action: 'share', itineraryId: created.itinerary.id, email: 'outsider@example.test', role: 'edit' })).status, 403);
+  f.sqlite.close();
+});
+
+test('invalid roles and cross-origin requests never expand route access', async () => {
+  const f = routeFixture();
+  assert.equal((await f.mutate('POST', 'owner', { action: 'share', email: 'outsider@example.test', role: 'owner' })).status, 400);
+  assert.equal((await f.mutate('POST', 'owner', { action: 'share', email: 'outsider@example.test', role: 'edit' }, '', { Origin: 'https://other.test' })).status, 403);
+  assert.equal((await f.read('outsider')).status, 403);
+  f.sqlite.close();
+});
+
+test('permission errors retain their message while HTML login errors stay readable', async () => {
+  const f = fixture();
+  const { readApiResponse } = f.load('lib/api-response.ts');
+  await assert.rejects(readApiResponse(Response.json({ error: '편집 권한이 없습니다.' }, { status: 403 })), error => error.status === 403 && /편집 권한/.test(error.message));
+  await assert.rejects(readApiResponse(new Response('<!DOCTYPE html>', { status: 401 })), /로그인/);
+  f.sqlite.close();
+});
+
+test('migration preserves existing route shares as view-only', () => {
+  const sqlite = new DatabaseSync(':memory:');
+  const migrations = readdirSync('drizzle').filter(name => name.endsWith('.sql')).sort();
+  for (const name of migrations.slice(0, 6)) sqlite.exec(readFileSync(`drizzle/${name}`, 'utf8'));
+  sqlite.exec(`
+    INSERT INTO users(id,email,password_hash,password_salt,created_at) VALUES ('u','u@example.test','unused','unused','2026-10-23');
+    INSERT INTO trips(id,title,token_hash,owner_user_id,created_at) VALUES ('t','Trip','hash','u','2026-10-23');
+    INSERT INTO itineraries(id,trip_id,owner_user_id,title,created_at) VALUES ('i','t','u','Route','2026-10-23');
+    INSERT INTO itinerary_shares(id,itinerary_id,user_id,created_at) VALUES ('s','i','u','2026-10-23');
+  `);
+  for (const name of migrations.slice(6)) sqlite.exec(readFileSync(`drizzle/${name}`, 'utf8'));
+  assert.equal(sqlite.prepare("SELECT role FROM itinerary_shares WHERE id='s'").get().role, 'view');
+  sqlite.close();
+});

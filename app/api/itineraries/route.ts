@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, getSessionUser, sameOrigin, sha256 } from "@/auth/server";
 
+type Access = "owner" | "edit" | "view";
 type SessionUser = { id: string; email: string };
 type ItineraryRow = {
   id: string;
@@ -26,58 +27,87 @@ async function requireUser(request: NextRequest): Promise<SessionUser | null> {
   return getSessionUser(request);
 }
 
-async function itineraryAccess(id: string, userId: string): Promise<{ itinerary: ItineraryRow; access: "owner" | "view" } | null> {
-  const itinerary = await db().prepare(`
+// A per-itinerary setting takes precedence over inherited travel/link permissions.
+// Ownership always stays with the original author.
+const accessSql = `
+  WITH context AS (SELECT ? AS userId, ? AS tokenHash), visible AS (
     SELECT i.id, i.trip_id AS tripId, t.title AS tripTitle, i.owner_user_id AS ownerUserId,
-      u.email AS ownerEmail, i.title, i.start_date AS startDate, i.day_count AS dayCount, i.created_at AS createdAt
+      u.email AS ownerEmail, i.title, i.start_date AS startDate, i.day_count AS dayCount, i.created_at AS createdAt,
+      CASE
+        WHEN i.owner_user_id = c.userId THEN 'owner'
+        WHEN s.user_id IS NOT NULL THEN CASE WHEN s.role = 'edit' THEN 'edit' ELSE 'view' END
+        WHEN t.owner_user_id = c.userId THEN 'edit'
+        WHEN ts.user_id IS NOT NULL THEN CASE WHEN ts.role = 'edit' THEN 'edit' ELSE 'view' END
+        WHEN t.token_hash = c.tokenHash THEN 'edit'
+        WHEN t.view_token_hash = c.tokenHash THEN 'view'
+        ELSE NULL
+      END AS access
     FROM itineraries i
     JOIN trips t ON t.id = i.trip_id
     JOIN users u ON u.id = i.owner_user_id
-    WHERE i.id = ? AND (
-      i.owner_user_id = ? OR EXISTS (
-        SELECT 1 FROM itinerary_shares s WHERE s.itinerary_id = i.id AND s.user_id = ?
-      )
-    )
-  `).bind(id, userId, userId).first<ItineraryRow>();
-  if (!itinerary) return null;
-  return { itinerary, access: itinerary.ownerUserId === userId ? "owner" : "view" };
+    CROSS JOIN context c
+    LEFT JOIN itinerary_shares s ON s.itinerary_id = i.id AND s.user_id = c.userId
+    LEFT JOIN trip_shares ts ON ts.trip_id = t.id AND ts.user_id = c.userId
+  )
+`;
+
+async function sharedTokenHash(request: NextRequest) {
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
+  return /^[0-9a-f]{64}$/.test(token) ? sha256(token) : null;
+}
+
+async function itineraryAccess(request: NextRequest, id: string, userId: string) {
+  const itinerary = await db().prepare(`${accessSql} SELECT * FROM visible WHERE id = ? AND access IS NOT NULL`)
+    .bind(userId, await sharedTokenHash(request), id).first<ItineraryRow & { access: Access }>();
+  return itinerary ? { itinerary, access: itinerary.access } : null;
 }
 
 async function canUseTrip(request: NextRequest, tripId: string, userId: string) {
-  const available = await db().prepare(`SELECT t.id, t.title FROM trips t LEFT JOIN trip_shares s ON s.trip_id = t.id AND s.user_id = ? WHERE t.id = ? AND (t.owner_user_id = ? OR s.user_id = ?)`)
-    .bind(userId, tripId, userId, userId).first<{ id: string; title: string }>();
-  if (available) return available;
-  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
-  if (!/^[0-9a-f]{64}$/.test(token)) return null;
-  const hash = await sha256(token);
-  return db().prepare("SELECT id, title FROM trips WHERE id = ? AND (token_hash = ? OR view_token_hash = ?)")
-    .bind(tripId, hash, hash).first<{ id: string; title: string }>();
+  const tokenHash = await sharedTokenHash(request);
+  return db().prepare(`
+    SELECT t.id, t.title,
+      CASE WHEN t.owner_user_id = ? THEN 'owner'
+        WHEN s.user_id IS NOT NULL THEN s.role
+        WHEN t.token_hash = ? THEN 'edit'
+        WHEN t.view_token_hash = ? THEN 'view' END AS access
+    FROM trips t LEFT JOIN trip_shares s ON s.trip_id = t.id AND s.user_id = ?
+    WHERE t.id = ?
+  `).bind(userId, tokenHash, tokenHash, userId, tripId)
+    .first<{ id: string; title: string; access: Access | null }>();
 }
+
+const sharesSql = `
+  WITH recipients AS (
+    SELECT user_id AS id FROM itinerary_shares WHERE itinerary_id = ?
+    UNION SELECT user_id FROM trip_shares WHERE trip_id = ?
+    UNION SELECT owner_user_id FROM trips WHERE id = ?
+  )
+  SELECT s.id, u.id AS userId, u.email,
+    COALESCE(s.role, CASE WHEN t.owner_user_id = u.id THEN 'edit' ELSE ts.role END) AS role,
+    CASE WHEN s.id IS NOT NULL THEN 'itinerary' ELSE 'trip' END AS source,
+    CASE WHEN t.owner_user_id = u.id THEN 'edit' ELSE ts.role END AS inheritedRole
+  FROM recipients r JOIN users u ON u.id = r.id
+  JOIN itineraries i ON i.id = ? JOIN trips t ON t.id = i.trip_id
+  LEFT JOIN itinerary_shares s ON s.itinerary_id = i.id AND s.user_id = u.id
+  LEFT JOIN trip_shares ts ON ts.trip_id = t.id AND ts.user_id = u.id
+  WHERE u.id <> i.owner_user_id ORDER BY u.email
+`;
 
 export async function GET(request: NextRequest) {
   try {
     const user = await requireUser(request);
     if (!user) return error("로그인이 필요합니다.", 401);
     if (request.nextUrl.searchParams.has("list")) {
-      const result = await db().prepare(`
-        SELECT i.id, i.trip_id AS tripId, t.title AS tripTitle, i.owner_user_id AS ownerUserId,
-          u.email AS ownerEmail, i.title, i.start_date AS startDate, i.day_count AS dayCount,
-          i.created_at AS createdAt,
-          CASE WHEN i.owner_user_id = ? THEN 'owner' ELSE 'view' END AS access,
-          (SELECT COUNT(*) FROM route_variants v WHERE v.itinerary_id = i.id) AS variantCount
-        FROM itineraries i
-        JOIN trips t ON t.id = i.trip_id
-        JOIN users u ON u.id = i.owner_user_id
-        WHERE i.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM itinerary_shares s WHERE s.itinerary_id = i.id AND s.user_id = ?
-        )
-        ORDER BY CASE WHEN i.owner_user_id = ? THEN 0 ELSE 1 END, i.created_at DESC
-      `).bind(user.id, user.id, user.id, user.id).all();
+      const result = await db().prepare(`${accessSql}
+        SELECT visible.*, (SELECT COUNT(*) FROM route_variants v WHERE v.itinerary_id = visible.id) AS variantCount
+        FROM visible WHERE access IS NOT NULL
+        ORDER BY CASE WHEN access = 'owner' THEN 0 ELSE 1 END, createdAt DESC
+      `).bind(user.id, await sharedTokenHash(request)).all();
       return NextResponse.json({ itineraries: result.results });
     }
 
     const id = request.nextUrl.searchParams.get("id") || "";
-    const authorized = await itineraryAccess(id, user.id);
+    const authorized = await itineraryAccess(request, id, user.id);
     if (!authorized) return error("이 동선을 볼 권한이 없습니다.", 403);
     const statements = [
       db().prepare(`
@@ -96,7 +126,7 @@ export async function GET(request: NextRequest) {
         ORDER BY rv.day, rv.created_at, rs.position, rs.created_at
       `).bind(id),
     ];
-    if (authorized.access === "owner") statements.push(
+    if (authorized.access !== "view") statements.push(
       db().prepare(`
         SELECT p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
           opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes
@@ -104,11 +134,9 @@ export async function GET(request: NextRequest) {
       `).bind(authorized.itinerary.tripId),
       db().prepare("SELECT id, name, color, is_default AS isDefault, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
         .bind(authorized.itinerary.tripId),
-      db().prepare(`
-        SELECT s.id, s.user_id AS userId, u.email, s.created_at AS createdAt
-        FROM itinerary_shares s JOIN users u ON u.id = s.user_id
-        WHERE s.itinerary_id = ? ORDER BY u.email
-      `).bind(id),
+    );
+    if (authorized.access === "owner") statements.push(
+      db().prepare(sharesSql).bind(id, authorized.itinerary.tripId, authorized.itinerary.tripId, id),
     );
     const [variants, stops, placeResult, collectionResult, shareResult] = await db().batch(statements);
     const places = placeResult || { results: [] };
@@ -132,7 +160,7 @@ export async function POST(request: NextRequest) {
     if (action === "create") {
       const tripId = asText(body.tripId, 100);
       const trip = await canUseTrip(request, tripId, user.id);
-      if (!trip) return error("이 장소 목록으로 동선을 만들 권한이 없습니다.", 403);
+      if (!trip || !trip.access || trip.access === "view") return error("이 장소 목록으로 동선을 만들려면 편집 권한이 필요합니다.", 403);
       const dayCount = asDay(body.dayCount) || 1;
       const id = crypto.randomUUID();
       const title = asText(body.title) || `${trip.title} 동선`;
@@ -143,8 +171,8 @@ export async function POST(request: NextRequest) {
     }
 
     const itineraryId = asText(body.itineraryId, 100);
-    const authorized = await itineraryAccess(itineraryId, user.id);
-    if (!authorized || authorized.access !== "owner") return error("동선 소유자만 수정할 수 있습니다.", 403);
+    const authorized = await itineraryAccess(request, itineraryId, user.id);
+    if (!authorized || authorized.access === "view") return error("이 동선을 수정할 편집 권한이 없습니다.", 403);
 
     if (action === "variant") {
       const day = asDay(body.day);
@@ -178,17 +206,18 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "share") {
+      if (authorized.access !== "owner") return error("동선 작성자만 공유 권한을 변경할 수 있습니다.", 403);
+      const role = body.role ?? "view";
+      if (role !== "view" && role !== "edit") return error("공유 권한은 보기 또는 편집으로 지정해 주세요.", 400);
       const email = asText(body.email, 254).toLowerCase();
       const target = await db().prepare("SELECT id, email FROM users WHERE email = ?").bind(email).first<{ id: string; email: string }>();
       if (!target) return error("해당 이메일로 가입한 사용자를 찾지 못했습니다.", 404);
-      if (target.id === user.id) return error("내 동선은 이미 볼 수 있습니다.", 400);
-      const existing = await db().prepare("SELECT id FROM itinerary_shares WHERE itinerary_id = ? AND user_id = ?")
-        .bind(itineraryId, target.id).first<{ id: string }>();
-      if (existing) return NextResponse.json({ id: existing.id, email: target.email });
-      const id = crypto.randomUUID();
-      await db().prepare("INSERT INTO itinerary_shares (id, itinerary_id, user_id, created_at) VALUES (?, ?, ?, ?)")
-        .bind(id, itineraryId, target.id, new Date().toISOString()).run();
-      return NextResponse.json({ id, email: target.email }, { status: 201 });
+      if (target.id === user.id) return error("작성자는 이미 모든 권한을 가지고 있습니다.", 400);
+      await db().prepare(`
+        INSERT INTO itinerary_shares (id, itinerary_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(itinerary_id, user_id) DO UPDATE SET role = excluded.role
+      `).bind(crypto.randomUUID(), itineraryId, target.id, role, new Date().toISOString()).run();
+      return NextResponse.json({ email: target.email, role });
     }
 
     return error("알 수 없는 요청입니다.", 400);
@@ -205,8 +234,8 @@ export async function PATCH(request: NextRequest) {
     if (!user) return error("로그인이 필요합니다.", 401);
     const body = await request.json() as Record<string, unknown>;
     const itineraryId = asText(body.itineraryId, 100);
-    const authorized = await itineraryAccess(itineraryId, user.id);
-    if (!authorized || authorized.access !== "owner") return error("동선 소유자만 수정할 수 있습니다.", 403);
+    const authorized = await itineraryAccess(request, itineraryId, user.id);
+    if (!authorized || authorized.access === "view") return error("이 동선을 수정할 편집 권한이 없습니다.", 403);
 
     if (body.action === "itinerary") {
       const title = asText(body.title);
@@ -281,8 +310,8 @@ export async function DELETE(request: NextRequest) {
     const user = await requireUser(request);
     if (!user) return error("로그인이 필요합니다.", 401);
     const itineraryId = request.nextUrl.searchParams.get("itineraryId") || "";
-    const authorized = await itineraryAccess(itineraryId, user.id);
-    if (!authorized || authorized.access !== "owner") return error("동선 소유자만 수정할 수 있습니다.", 403);
+    const authorized = await itineraryAccess(request, itineraryId, user.id);
+    if (!authorized || authorized.access === "view") return error("이 동선을 수정할 편집 권한이 없습니다.", 403);
 
     const stopId = request.nextUrl.searchParams.get("stopId");
     if (stopId) {
@@ -297,10 +326,12 @@ export async function DELETE(request: NextRequest) {
     }
     const shareId = request.nextUrl.searchParams.get("shareId");
     if (shareId) {
+      if (authorized.access !== "owner") return error("동선 작성자만 공유 권한을 변경할 수 있습니다.", 403);
       await db().prepare("DELETE FROM itinerary_shares WHERE id = ? AND itinerary_id = ?").bind(shareId, itineraryId).run();
       return NextResponse.json({ ok: true });
     }
     if (request.nextUrl.searchParams.get("delete") === "itinerary") {
+      if (authorized.access !== "owner") return error("동선 작성자만 동선을 삭제할 수 있습니다.", 403);
       await db().prepare("DELETE FROM itineraries WHERE id = ? AND owner_user_id = ?").bind(itineraryId, user.id).run();
       return NextResponse.json({ ok: true });
     }
