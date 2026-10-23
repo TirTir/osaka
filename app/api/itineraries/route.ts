@@ -79,39 +79,41 @@ export async function GET(request: NextRequest) {
     const id = request.nextUrl.searchParams.get("id") || "";
     const authorized = await itineraryAccess(id, user.id);
     if (!authorized) return error("이 동선을 볼 권한이 없습니다.", 403);
-    const variants = await db().prepare(`
-      SELECT id, itinerary_id AS itineraryId, day, name, transport_mode AS transportMode, created_at AS createdAt
-      FROM route_variants WHERE itinerary_id = ? ORDER BY day, created_at
-    `).bind(id).all();
-    const stops = await db().prepare(`
-      SELECT rs.id AS stopId, rs.variant_id AS variantId, rs.position,
-        rs.transport_mode AS legTransportMode, rs.fare_yen AS legFareYen,
-        p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
-        p.opening_hours AS openingHours, p.menu_url AS menuUrl, p.website_url AS websiteUrl, p.notes
-      FROM route_stops rs
-      JOIN route_variants rv ON rv.id = rs.variant_id
-      JOIN places p ON p.id = rs.place_id
-      WHERE rv.itinerary_id = ?
-      ORDER BY rv.day, rv.created_at, rs.position, rs.created_at
-    `).bind(id).all();
-    const places = authorized.access === "owner"
-      ? await db().prepare(`
-          SELECT p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
-            opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes
-          FROM places p WHERE trip_id = ? ORDER BY name
-        `).bind(authorized.itinerary.tripId).all()
-      : { results: [] };
-    const collections = authorized.access === "owner"
-      ? await db().prepare("SELECT id, name, color, is_default AS isDefault, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
-          .bind(authorized.itinerary.tripId).all()
-      : { results: [] };
-    const shares = authorized.access === "owner"
-      ? await db().prepare(`
-          SELECT s.id, s.user_id AS userId, u.email, s.created_at AS createdAt
-          FROM itinerary_shares s JOIN users u ON u.id = s.user_id
-          WHERE s.itinerary_id = ? ORDER BY u.email
-        `).bind(id).all()
-      : { results: [] };
+    const statements = [
+      db().prepare(`
+        SELECT id, itinerary_id AS itineraryId, day, name, transport_mode AS transportMode, created_at AS createdAt
+        FROM route_variants WHERE itinerary_id = ? ORDER BY day, created_at
+      `).bind(id),
+      db().prepare(`
+        SELECT rs.id AS stopId, rs.variant_id AS variantId, rs.position,
+          rs.transport_mode AS legTransportMode, rs.fare_yen AS legFareYen,
+          p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
+          p.opening_hours AS openingHours, p.menu_url AS menuUrl, p.website_url AS websiteUrl, p.notes
+        FROM route_stops rs
+        JOIN route_variants rv ON rv.id = rs.variant_id
+        JOIN places p ON p.id = rs.place_id
+        WHERE rv.itinerary_id = ?
+        ORDER BY rv.day, rv.created_at, rs.position, rs.created_at
+      `).bind(id),
+    ];
+    if (authorized.access === "owner") statements.push(
+      db().prepare(`
+        SELECT p.id, p.source_id AS sourceId, p.collection_id AS collectionId, p.name, p.address, p.category, p.lat, p.lon,
+          opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes
+        FROM places p WHERE trip_id = ? ORDER BY name
+      `).bind(authorized.itinerary.tripId),
+      db().prepare("SELECT id, name, color, is_default AS isDefault, position FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
+        .bind(authorized.itinerary.tripId),
+      db().prepare(`
+        SELECT s.id, s.user_id AS userId, u.email, s.created_at AS createdAt
+        FROM itinerary_shares s JOIN users u ON u.id = s.user_id
+        WHERE s.itinerary_id = ? ORDER BY u.email
+      `).bind(id),
+    );
+    const [variants, stops, placeResult, collectionResult, shareResult] = await db().batch(statements);
+    const places = placeResult || { results: [] };
+    const collections = collectionResult || { results: [] };
+    const shares = shareResult || { results: [] };
     return NextResponse.json({ itinerary: { ...authorized.itinerary, access: authorized.access }, variants: variants.results, stops: stops.results, places: places.results, collections: collections.results, shares: shares.results });
   } catch (cause) {
     console.error(cause);

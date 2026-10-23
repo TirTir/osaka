@@ -16,6 +16,8 @@ export async function POST(request: NextRequest) {
     if (action === "chatgpt") {
       const identity = getChatGPTIdentity(request);
       if (!identity) return fail("ChatGPT 로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.", 401);
+      const existing = await getSessionUser(request);
+      if (existing) return NextResponse.json({ user: existing });
       const user = await getOrCreateChatGPTUser(identity);
       const session = await createSession(user.id);
       const response = NextResponse.json({ user });

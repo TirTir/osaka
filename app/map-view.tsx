@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { loadGoogleMaps } from "@/lib/google-maps";
 
 type MapPlace = { id: string; name: string; category: string; lat: number; lon: number; day: number | null; position: number };
-type Props = { places: MapPlace[]; activeDay: string; preview: { lat: number; lon: number } | null; routeMode?: boolean; onPick?: (point: { lat: number; lon: number }) => void; onSelect?: (id: string) => void };
+type Props = { apiKey?: string; places: MapPlace[]; activeDay: string; preview: { lat: number; lon: number } | null; routeMode?: boolean; onPick?: (point: { lat: number; lon: number }) => void; onSelect?: (id: string) => void };
 
 // OverlayView preserves the existing accessible marker buttons without requiring
 // a separately configured Google Cloud map ID.
@@ -27,7 +27,7 @@ function placeMarker(map: google.maps.Map, position: google.maps.LatLngLiteral, 
   return marker;
 }
 
-export default function MapView({ places, activeDay, preview, routeMode = false, onPick, onSelect }: Props) {
+export default function MapView({ apiKey, places, activeDay, preview, routeMode = false, onPick, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const callbacks = useRef({ onPick, onSelect });
@@ -40,7 +40,7 @@ export default function MapView({ places, activeDay, preview, routeMode = false,
     let clickListener: google.maps.MapsEventListener | undefined;
     const authError = () => setError("구글 지도 연결을 확인해 주세요. 사이트 관리자에게 문의해 주세요.");
     window.addEventListener("google-maps-auth-error", authError);
-    void loadGoogleMaps().then(maps => {
+    void loadGoogleMaps(apiKey).then(maps => {
       if (disposed || !containerRef.current) return;
       const map = new maps.Map(containerRef.current, {
         center: { lat: 34.6688, lng: 135.5013 }, zoom: 13,
@@ -61,7 +61,7 @@ export default function MapView({ places, activeDay, preview, routeMode = false,
       if (mapRef.current) google.maps.event.clearInstanceListeners(mapRef.current);
       mapRef.current = null;
     };
-  }, []);
+  }, [apiKey]);
 
   useEffect(() => {
     const map = mapRef.current;

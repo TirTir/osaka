@@ -5,9 +5,11 @@ import { readApiResponse } from "@/lib/api-response";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, CreditCard, List, LogOut, MapPin, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Route, Search, Trash2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { lazy, Suspense } from "react";
 import MapView from "./map-view";
-import RoutePlanner, { type PlannerMapPlace } from "./route-planner";
-import TransportGuide from "./transport-guide";
+import type { PlannerMapPlace } from "./route-planner";
+const RoutePlanner = lazy(() => import("./route-planner"));
+const TransportGuide = lazy(() => import("./transport-guide"));
 
 type Place = { id: string; sourceId?: string; collectionId: string | null; name: string; address: string; category: string; lat: number; lon: number; openingHours: string; menuUrl: string; websiteUrl: string; notes: string; day: number | null; position: number };
 type SearchPlace = Omit<Place, "id" | "collectionId" | "notes" | "day" | "position"> & Partial<Pick<GoogleSearchPlace, "googleMapsUrl" | "attributions">>;
@@ -15,7 +17,7 @@ type Collection = { id: string; name: string; color: string; isDefault: number; 
 type Trip = { id: string; title: string; createdAt?: string; placeCount?: number; access?: Access; ownerEmail?: string };
 type TripShare = { id: string; userId: string; email: string; role: "view" | "edit" };
 type Access = "owner" | "edit" | "view";
-type ApiResponse = { error?: string; user?: { id: string; email: string } | null; trips?: Trip[]; trip?: Trip; places?: Place[]; collections?: Collection[]; collection?: Collection; shares?: TripShare[]; share?: TripShare; access?: Access; legacy?: boolean; token?: string; role?: string };
+type ApiResponse = { error?: string; user?: { id: string; email: string } | null; trips?: Trip[]; trip?: Trip; place?: Place; places?: Place[]; tokenUsed?: boolean; invalidToken?: boolean; collections?: Collection[]; collection?: Collection; shares?: TripShare[]; share?: TripShare; access?: Access; legacy?: boolean; token?: string; role?: string };
 type ExchangeRate = { rate: number; date: string; unit: number; source: string };
 
 function wonPrice(yen: number, rate: number | null) {
@@ -28,7 +30,7 @@ async function api(path: string, init?: RequestInit): Promise<ApiResponse> {
   return readApiResponse<ApiResponse>(response);
 }
 
-export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: string }) {
+export default function TripBoard({ chatGPTSignInHref, mapsApiKey }: { chatGPTSignInHref: string; mapsApiKey?: string }) {
   const [user, setUser] = useState<{ id: string; email: string } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [myTrips, setMyTrips] = useState<Trip[]>([]);
@@ -88,36 +90,35 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     let cancelled = false;
     void (async () => {
       try {
-        let auth = await api("/api/auth");
         const pageUrl = new URL(window.location.href);
         if (pageUrl.searchParams.get("auth") === "chatgpt") {
-          auth = await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "chatgpt" }) });
+          await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "chatgpt" }) });
           pageUrl.searchParams.delete("auth");
           window.history.replaceState(null, "", `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`);
           setMessage("ChatGPT 계정으로 로그인했습니다.");
         }
         if (cancelled) return;
-        setUser(auth.user || null);
         const hash = new URLSearchParams(window.location.hash.slice(1));
         const id = hash.get("board") || "";
         const token = hash.get("trip") || (!id ? window.localStorage.getItem("osaka-trip-token") || "" : "");
-        let opened = false;
-        if (token && auth.user) {
-          try { await loadBoard("", token); opened = true; }
-          catch (cause) {
-            if (hash.get("trip")) throw cause;
-            window.localStorage.removeItem("osaka-trip-token");
-          }
+        const target = boardPath(id, token, "?list=1&initial=1");
+        const data = await api(target.path, { headers: target.headers });
+        if (cancelled) return;
+        setUser(data.user || null); setMyTrips(data.trips || []);
+        if (data.invalidToken) {
+          if (hash.get("trip")) throw new Error("목록을 열 수 없습니다. 로그인이나 공유 링크를 확인해 주세요.");
+          window.localStorage.removeItem("osaka-trip-token");
         }
-        if (auth.user) {
-          const trips = await loadTrips();
-          if (!opened && trips.length) await loadBoard(id && trips.some(item => item.id === id) ? id : trips[0].id, "");
+        if (data.trip) {
+          setBoardId(data.trip.id); setShareToken(data.tokenUsed ? token : ""); setTrip(data.trip);
+          setTripTitleDraft(data.trip.title); setPlaces(data.places || []); setCollections(data.collections || []);
+          setTripShares(data.shares || []); setAccess(data.access || null); setLegacy(!!data.legacy);
         }
       } catch (cause) { if (!cancelled) setMessage((cause as Error).message); }
       finally { if (!cancelled) setAuthChecked(true); }
     })();
     return () => { cancelled = true; };
-  }, [loadBoard, loadTrips]);
+  }, [boardPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,7 +160,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
     try {
       const data = await api("/api/board", { method: "POST", body: JSON.stringify({ action: "create", title }) });
       if (!data.trip) throw new Error("목록을 만들지 못했습니다.");
-      await loadTrips(); await loadBoard(data.trip.id, "");
+      await Promise.all([loadTrips(), loadBoard(data.trip.id, "")]);
       window.location.hash = `board=${data.trip.id}`;
       setMessage("나만 볼 수 있는 새 목록을 만들었습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
@@ -213,7 +214,7 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
       const data = await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "claim" }) });
       if (!data.trip) throw new Error("목록을 가져오지 못했습니다.");
       window.localStorage.removeItem("osaka-trip-token");
-      await loadTrips(); await loadBoard(data.trip.id, "");
+      await Promise.all([loadTrips(), loadBoard(data.trip.id, "")]);
       window.location.hash = `board=${data.trip.id}`;
       setMessage("기존 목록을 내 계정으로 가져왔습니다. 이전 공유 링크는 만료됐습니다.");
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
@@ -319,8 +320,12 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
         } catch { detailWarning = " 영업시간은 불러오지 못해 비워뒀습니다."; }
       }
       const target = boardPath(boardId, shareToken);
-      await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "add", place: { ...completePlace, collectionId: selectedCollectionId === "all" ? null : selectedCollectionId } }) });
-      await reload(); setResults([]); setQuery(""); setManual(false); setPicked(null);
+      const saved = await api(target.path, { method: "POST", headers: target.headers, body: JSON.stringify({ action: "add", place: { ...completePlace, collectionId: selectedCollectionId === "all" ? null : selectedCollectionId } }) });
+      if (saved.place) {
+        setPlaces(current => [...current, saved.place!]);
+        setMyTrips(current => current.map(item => item.id === trip?.id ? { ...item, placeCount: (item.placeCount || 0) + 1 } : item));
+      } else await reload();
+      setResults([]); setQuery(""); setManual(false); setPicked(null);
       setMessage(`${place.name}을(를) 저장했습니다.${detailWarning}`);
     } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); }
   }
@@ -386,11 +391,11 @@ export default function TripBoard({ chatGPTSignInHref }: { chatGPTSignInHref: st
           <div className="panel-section-title"><h2>{selectedCollectionId === "all" ? "전체 장소" : collections.find(item => item.id === selectedCollectionId)?.name || "기본"}</h2><span>{visiblePlaces.length}곳</span></div>
           {visiblePlaces.length ? <div className="place-list">{visiblePlaces.map((place, index) => { const collection = collections.find(item => item.id === place.collectionId) || collections.find(item => item.isDefault); return <button className={`place-card ${draft?.id === place.id ? "is-selected" : ""}`} key={place.id} onClick={() => setDraft({ ...place })}><span className="place-number">{index + 1}</span><span className="place-card-body"><span className="place-card-top"><strong>{place.name}</strong><em style={collection ? { color: collection.color, backgroundColor: `${collection.color}18` } : undefined}>{collection?.name || "기본"}</em></span><span className="place-card-address">{place.address || "주소 미등록"}</span><span className="place-card-meta">{place.openingHours ? "영업시간 있음" : "영업시간 미등록"}</span></span></button>; })}</div> : <div className="empty-card"><MapPin size={30} /><strong>아직 저장한 장소가 없어요</strong><p>{writable ? "가고 싶은 곳을 검색해 지도에 담아보세요." : "공유한 사람이 장소를 추가하면 여기에 표시됩니다."}</p></div>}
         </>}
-        </> : workspaceMode === "routes" && user ? <RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} yenToKrwRate={exchangeRate?.rate || null} onRouteChange={handleRouteChange} /> : workspaceMode === "guide" && user ? <TransportGuide yenToKrwRate={exchangeRate?.rate || null} /> : null}
+        </> : workspaceMode === "routes" && user ? <Suspense fallback={<p role="status">동선을 불러오는 중…</p>}><RoutePlanner currentTripId={trip?.id || ""} currentTripTitle={trip?.title || ""} boardToken={shareToken} yenToKrwRate={exchangeRate?.rate || null} onRouteChange={handleRouteChange} /></Suspense> : workspaceMode === "guide" && user ? <Suspense fallback={<p role="status">교통 정보를 불러오는 중…</p>}><TransportGuide yenToKrwRate={exchangeRate?.rate || null} /></Suspense> : null}
         {message && <p className="status-message" role="status">{message}</p>}
         <div className="panel-footer">지도·장소 검색 <a href="https://maps.google.com/" target="_blank" rel="noreferrer">Google Maps</a></div>
       </section>
-      <section className={`map-panel ${workspaceMode === "guide" ? "guide-map" : ""}`} aria-label={workspaceMode === "guide" ? "교통비 빠른 요약" : "오사카 지도"}>{workspaceMode === "guide" ? <div className="guide-map-summary"><CreditCard size={34} /><strong>교통비 계산 기준</strong><span><b>도보 0엔</b><small>{wonPrice(0, exchangeRate?.rate || null) || "약 0원"}</small></span><span><b>Osaka Metro 190~390엔</b><small>{exchangeRate ? `${wonPrice(190, exchangeRate.rate)}~${wonPrice(390, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>Osaka City Bus 210엔</b><small>{exchangeRate ? wonPrice(210, exchangeRate.rate) : "환율 확인 중"}</small></span><span><b>난카이 라피트 1,410~1,590엔</b><small>{exchangeRate ? `${wonPrice(1410, exchangeRate.rate)}~${wonPrice(1590, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>시내 1일권 620엔부터</b><small>{exchangeRate ? wonPrice(620, exchangeRate.rate) : "환율 확인 중"}</small></span><p>동선 메뉴에서 구간마다 이동수단과 실제 확인한 요금을 수정하면 총액이 자동으로 합산됩니다.</p></div> : <><MapView places={workspaceMode === "routes" ? routeMapPlaces : visiblePlaces} activeDay={workspaceMode === "routes" ? "route" : "all"} preview={workspaceMode === "places" ? picked : null} routeMode={workspaceMode === "routes"} onPick={workspaceMode === "places" && manual && writable ? setPicked : undefined} onSelect={workspaceMode === "places" ? id => { const found = places.find(place => place.id === id); if (found) setDraft({ ...found }); } : undefined} /><div className="map-note">{workspaceMode === "routes" ? routeMapLabel : "오사카 · Google 지도"}</div></>}</section>
+      <section className={`map-panel ${workspaceMode === "guide" ? "guide-map" : ""}`} aria-label={workspaceMode === "guide" ? "교통비 빠른 요약" : "오사카 지도"}>{workspaceMode === "guide" ? <div className="guide-map-summary"><CreditCard size={34} /><strong>교통비 계산 기준</strong><span><b>도보 0엔</b><small>{wonPrice(0, exchangeRate?.rate || null) || "약 0원"}</small></span><span><b>Osaka Metro 190~390엔</b><small>{exchangeRate ? `${wonPrice(190, exchangeRate.rate)}~${wonPrice(390, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>Osaka City Bus 210엔</b><small>{exchangeRate ? wonPrice(210, exchangeRate.rate) : "환율 확인 중"}</small></span><span><b>난카이 라피트 1,410~1,590엔</b><small>{exchangeRate ? `${wonPrice(1410, exchangeRate.rate)}~${wonPrice(1590, exchangeRate.rate).replace("약 ", "")}` : "환율 확인 중"}</small></span><span><b>시내 1일권 620엔부터</b><small>{exchangeRate ? wonPrice(620, exchangeRate.rate) : "환율 확인 중"}</small></span><p>동선 메뉴에서 구간마다 이동수단과 실제 확인한 요금을 수정하면 총액이 자동으로 합산됩니다.</p></div> : <><MapView apiKey={mapsApiKey} places={workspaceMode === "routes" ? routeMapPlaces : visiblePlaces} activeDay={workspaceMode === "routes" ? "route" : "all"} preview={workspaceMode === "places" ? picked : null} routeMode={workspaceMode === "routes"} onPick={workspaceMode === "places" && manual && writable ? setPicked : undefined} onSelect={workspaceMode === "places" ? id => { const found = places.find(place => place.id === id); if (found) setDraft({ ...found }); } : undefined} /><div className="map-note">{workspaceMode === "routes" ? routeMapLabel : "오사카 · Google 지도"}</div></>}</section>
       {workspaceMode === "places" && draft && <aside className="detail-panel" aria-label={`${draft.name} 상세 정보`}><div className="detail-header"><div><span className="eyebrow">PLACE DETAILS</span><h2>{draft.name}</h2></div><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}>×</button></div><p className="detail-address">{draft.address || "주소가 없습니다."}</p><div className="detail-fields">
         <label>장소 이름<input value={draft.name} disabled={!writable} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
         <label>주소<input value={draft.address} disabled={!writable} onChange={event => setDraft({ ...draft, address: event.target.value })} /></label>

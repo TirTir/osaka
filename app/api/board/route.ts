@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db, getSessionUser, randomToken, sameOrigin, sha256 } from "@/auth/server";
+import { db, getSessionUser, randomToken, sameOrigin, sha256, type User } from "@/auth/server";
 
 type PlaceInput = { name?: unknown; address?: unknown; category?: unknown; collectionId?: unknown; lat?: unknown; lon?: unknown; openingHours?: unknown; menuUrl?: unknown; websiteUrl?: unknown; notes?: unknown; day?: unknown; position?: unknown; sourceId?: unknown };
 type Trip = { id: string; title: string; createdAt: string; ownerUserId: string | null };
@@ -9,8 +9,8 @@ const asUrl = (value: unknown) => { const raw = asText(value, 1200); if (!raw) r
 const asColor = (value: unknown) => /^#[0-9a-f]{6}$/i.test(asText(value, 7)) ? asText(value, 7) : "#d9553c";
 const error = (message: string, status: number) => NextResponse.json({ error: message }, { status });
 
-async function authorizedTrip(request: NextRequest): Promise<{ trip: Trip; access: Access } | null> {
-  const user = await getSessionUser(request);
+async function authorizedTrip(request: NextRequest, knownUser?: User): Promise<{ trip: Trip; access: Access } | null> {
+  const user = knownUser ?? await getSessionUser(request);
   if (!user) return null;
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
   if (/^[0-9a-f]{64}$/.test(token)) {
@@ -53,11 +53,30 @@ async function resolveCollectionId(tripId: string, value: unknown) {
   return getDefaultCollectionId(tripId);
 }
 
+async function boardData(authorization: { trip: Trip; access: Access }) {
+  // D1 batch executes these reads in one database round trip after authorization.
+  const statements = [
+    db().prepare("SELECT id, source_id AS sourceId, collection_id AS collectionId, name, address, category, lat, lon, opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes, day, position FROM places WHERE trip_id = ? ORDER BY COALESCE(day, 999), position, created_at")
+      .bind(authorization.trip.id),
+    db().prepare("SELECT id, name, color, is_default AS isDefault, position, created_at AS createdAt FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
+      .bind(authorization.trip.id),
+  ];
+  if (authorization.access === "owner") statements.push(
+    db().prepare("SELECT s.id, s.user_id AS userId, u.email, s.role, s.created_at AS createdAt FROM trip_shares s JOIN users u ON u.id = s.user_id WHERE s.trip_id = ? ORDER BY u.email")
+      .bind(authorization.trip.id),
+  );
+  const [places, collections, shares] = await db().batch(statements);
+  const { id, title, createdAt } = authorization.trip;
+  return { trip: { id, title, createdAt }, access: authorization.access, legacy: authorization.trip.ownerUserId === null,
+    places: places.results, collections: collections.results, shares: shares?.results || [] };
+}
+
 export async function GET(request: NextRequest) {
   try {
     if (request.nextUrl.searchParams.has("list")) {
+      const initial = request.nextUrl.searchParams.has("initial");
       const user = await getSessionUser(request);
-      if (!user) return error("로그인이 필요합니다.", 401);
+      if (!user) return initial ? NextResponse.json({ user: null, trips: [] }) : error("로그인이 필요합니다.", 401);
       const result = await db().prepare(`
         SELECT t.id, t.title, t.created_at AS createdAt, COUNT(DISTINCT p.id) AS placeCount,
           CASE WHEN t.owner_user_id = ? THEN 'owner' ELSE ts.role END AS access,
@@ -69,20 +88,31 @@ export async function GET(request: NextRequest) {
         WHERE t.owner_user_id = ? OR ts.user_id = ?
         GROUP BY t.id, ts.role, owner.email
         ORDER BY CASE WHEN t.owner_user_id = ? THEN 0 ELSE 1 END, t.created_at DESC
-      `).bind(user.id, user.id, user.id, user.id, user.id).all();
-      return NextResponse.json({ trips: result.results });
+      `).bind(user.id, user.id, user.id, user.id, user.id).all<{ id: string }>();
+      if (!initial) return NextResponse.json({ trips: result.results });
+
+      // Include the selected board in the initial response, avoiding auth/list/detail waterfalls.
+      const sharedUrl = new URL(request.url);
+      sharedUrl.searchParams.delete("id");
+      let authorization = request.headers.has("authorization")
+        ? await authorizedTrip(new NextRequest(sharedUrl, { headers: request.headers }), user) : null;
+      const tokenUsed = !!authorization;
+      const invalidToken = request.headers.has("authorization") && !tokenUsed;
+      if (!authorization && result.results.length) {
+        const requested = request.nextUrl.searchParams.get("id");
+        const selected = result.results.find(trip => trip.id === requested) || result.results[0];
+        const url = new URL(request.url);
+        url.searchParams.set("id", selected.id);
+        const headers = new Headers(request.headers);
+        headers.delete("authorization");
+        authorization = await authorizedTrip(new NextRequest(url, { headers }), user);
+      }
+      const board = authorization ? await boardData(authorization) : {};
+      return NextResponse.json({ user, trips: result.results, ...board, tokenUsed, invalidToken });
     }
     const authorization = await authorizedTrip(request);
     if (!authorization) return error("목록을 열 수 없습니다. 로그인이나 공유 링크를 확인해 주세요.", 401);
-    const result = await db().prepare("SELECT id, source_id AS sourceId, collection_id AS collectionId, name, address, category, lat, lon, opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes, day, position FROM places WHERE trip_id = ? ORDER BY COALESCE(day, 999), position, created_at")
-      .bind(authorization.trip.id).all();
-    const collections = await db().prepare("SELECT id, name, color, is_default AS isDefault, position, created_at AS createdAt FROM place_collections WHERE trip_id = ? ORDER BY position, created_at")
-      .bind(authorization.trip.id).all();
-    const shares = authorization.access === "owner"
-      ? await db().prepare(`SELECT s.id, s.user_id AS userId, u.email, s.role, s.created_at AS createdAt FROM trip_shares s JOIN users u ON u.id = s.user_id WHERE s.trip_id = ? ORDER BY u.email`).bind(authorization.trip.id).all()
-      : { results: [] };
-    const { id, title, createdAt } = authorization.trip;
-    return NextResponse.json({ trip: { id, title, createdAt }, access: authorization.access, legacy: authorization.trip.ownerUserId === null, places: result.results, collections: collections.results, shares: shares.results });
+    return NextResponse.json(await boardData(authorization));
   } catch (cause) { console.error(cause); return error("여행 정보를 불러오지 못했습니다.", 500); }
 }
 
@@ -156,11 +186,22 @@ export async function POST(request: NextRequest) {
     const lon = Number(place?.lon);
     if (!name || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return error("장소 이름과 위치를 확인해 주세요.", 400);
     const id = crypto.randomUUID();
-    const collectionId = await resolveCollectionId(trip.id, place?.collectionId);
-    const position = await db().prepare("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM places WHERE trip_id = ?").bind(trip.id).first<{ next: number }>();
-    await db().prepare("INSERT INTO places (id, trip_id, collection_id, source_id, name, address, category, lat, lon, opening_hours, menu_url, website_url, notes, day, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(id, trip.id, collectionId, asText(place?.sourceId, 100) || null, name, asText(place?.address, 300), asText(place?.category, 40) || "place", lat, lon, asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl), asText(place?.notes, 2000), null, position?.next ?? 1, new Date().toISOString()).run();
-    return NextResponse.json({ id }, { status: 201 });
+    // Choose the category and next position inside the insert instead of two extra reads.
+    const savedPlace = await db().prepare(`
+      INSERT INTO places (id, trip_id, collection_id, source_id, name, address, category, lat, lon,
+        opening_hours, menu_url, website_url, notes, day, position, created_at)
+      VALUES (?, ?, COALESCE(
+        (SELECT id FROM place_collections WHERE id = ? AND trip_id = ?),
+        (SELECT id FROM place_collections WHERE trip_id = ? AND is_default = 1 LIMIT 1)
+      ), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+        (SELECT COALESCE(MAX(position), 0) + 1 FROM places WHERE trip_id = ?), ?)
+      RETURNING id, collection_id AS collectionId, source_id AS sourceId, name, address, category, lat, lon,
+        opening_hours AS openingHours, menu_url AS menuUrl, website_url AS websiteUrl, notes, day, position
+    `).bind(id, trip.id, asText(place?.collectionId, 100), trip.id, trip.id,
+      asText(place?.sourceId, 100) || null, name, asText(place?.address, 300), asText(place?.category, 40) || "place",
+      lat, lon, asText(place?.openingHours, 500), asUrl(place?.menuUrl), asUrl(place?.websiteUrl),
+      asText(place?.notes, 2000), trip.id, new Date().toISOString()).first();
+    return NextResponse.json({ id, place: savedPlace }, { status: 201 });
   } catch (cause) { console.error(cause); return error("저장하지 못했습니다.", 500); }
 }
 
